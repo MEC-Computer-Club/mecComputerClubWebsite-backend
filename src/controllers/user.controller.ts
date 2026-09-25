@@ -15,6 +15,7 @@ import { sendEmail } from "../utils/sendEmail";
 import { generateEmail } from "../utils/generateEmailTemplate";
 import { getClientIp } from "../middlewares/loginRateLimiter.middleware";
 import AppError from "../utils/AppError";
+import { CP_SHEET_PROBLEM_IDS, CP_SHEET_TITLE_INDEX, normalizeProblemTitle } from "../utils/cpSheetProblemIds";
 
 export const register = async (req: Request, res: Response) => {
   let profileImageUrl: string | null = null;
@@ -1522,6 +1523,7 @@ interface CachedCfData {
   rank: string;
   avatar?: string;
   solved: number;
+  sheetSolved?: number;
   lastFetched: number;
 }
 
@@ -1595,19 +1597,55 @@ export const getLeaderboard = async (req: Request, res: Response, next: NextFunc
         await Promise.allSettled(
           handlesToFetch.map(async (h) => {
             try {
-              const statusUrl = `https://codeforces.com/api/user.status?handle=${h}&from=1&count=1000`;
-              const statusRes = await fetch(statusUrl, { signal: AbortSignal.timeout(7000) });
+              const statusUrl = `https://codeforces.com/api/user.status?handle=${h}&from=1&count=5000`;
+              const statusRes = await fetch(statusUrl, { signal: AbortSignal.timeout(10000) });
               if (statusRes.ok) {
                 const statusData: any = await statusRes.json();
                 if (statusData.status === "OK" && Array.isArray(statusData.result)) {
-                  const uniqueSolved = new Set(
-                    statusData.result
-                      .filter((s: any) => s.verdict === "OK" && s.problem)
-                      .map((s: any) => `${s.problem.contestId}-${s.problem.index}`)
-                  );
+                  const uniqueSolved = new Set<string>();
+                  const sheetSolved = new Set<string>();
+                  const solvedSubmissions: Array<{ contestId: number; name: string; rating?: number }> = [];
+
+                  for (const s of statusData.result) {
+                    if (s.verdict === "OK" && s.problem?.contestId && s.problem?.index) {
+                      const contestId = Number(s.problem.contestId);
+                      const index = String(s.problem.index).toUpperCase();
+                      const fullId = `${contestId}${index}`;
+                      if (!uniqueSolved.has(fullId)) {
+                        uniqueSolved.add(fullId);
+                        solvedSubmissions.push({
+                          contestId,
+                          name: s.problem.name || "",
+                          rating: typeof s.problem.rating === "number" ? s.problem.rating : undefined,
+                        });
+                        if (CP_SHEET_PROBLEM_IDS.has(fullId)) {
+                          sheetSolved.add(fullId);
+                        }
+                      }
+                    }
+                  }
+
+                  // Twin round matching (Div 1 / Div 2 twin rounds or Gym mirrors)
+                  for (const sub of solvedSubmissions) {
+                    if (!sub.name || !sub.rating) continue;
+                    const normSub = normalizeProblemTitle(sub.name);
+                    const candidates = CP_SHEET_TITLE_INDEX.get(normSub);
+                    if (candidates) {
+                      for (const cp of candidates) {
+                        if (!sheetSolved.has(cp.id) && cp.rating === sub.rating) {
+                          const diff = Math.abs(sub.contestId - cp.contestId);
+                          if (diff <= 10 || sub.contestId >= 100000) {
+                            sheetSolved.add(cp.id);
+                          }
+                        }
+                      }
+                    }
+                  }
+
                   const cached = cfLeaderboardCache.get(h);
                   if (cached) {
                     cached.solved = uniqueSolved.size;
+                    cached.sheetSolved = sheetSolved.size;
                   }
                 }
               }
@@ -1636,6 +1674,7 @@ export const getLeaderboard = async (req: Request, res: Response, next: NextFunc
         maxRating: cf?.maxRating || 0,
         tier: cf?.rank || "unrated",
         solved: cf?.solved || 0,
+        sheetSolved: cf?.sheetSolved ?? 0,
         avatar: cf?.avatar || m.imageUrl || "",
         imageUrl: m.imageUrl || "",
         designation: m.designation || m.customRole || (m.clubRole === "executive" ? "Executive Member" : m.clubRole === "advisor" ? "Advisor" : "Member"),

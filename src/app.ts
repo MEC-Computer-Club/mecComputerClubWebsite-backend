@@ -1,5 +1,5 @@
+import "./config/env";
 import express from "express";
-import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import compression from "compression";
 import userRoutes from "./routes/user.routes";
@@ -41,8 +41,6 @@ import globalErrorHandler from "./middlewares/errorMiddleware";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./config/swagger.config";
 import path from "path";
-
-dotenv.config();
 
 const app = express();
 app.use("/public", express.static(path.join(__dirname, "..", "public")));
