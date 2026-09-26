@@ -20,7 +20,7 @@ export const authMiddleware = (roles?: string[]) => {
       const user = await UserModel.findById(payload.id).select("role fullName");
       if (!user) return res.status(404).json({ message: "User does not exist" });
       if (user.role !== payload.role) {
-        (req as any).user = { id: payload.id, role: user.role, fullName: user.fullName };
+        (req as any).user = { id: payload.id, _id: payload.id, role: user.role, fullName: user.fullName };
         // ... refresh token
         res.clearCookie("auth_token");
         res.clearCookie("role");
@@ -41,7 +41,7 @@ export const authMiddleware = (roles?: string[]) => {
           sameSite: isProduction ? "none" : "lax",
         });
       } else {
-        (req as any).user = { id: payload.id, role: payload.role, fullName: user.fullName };
+        (req as any).user = { id: payload.id, _id: payload.id, role: payload.role, fullName: user.fullName };
       }
       if (roles && roles.length && !roles.includes(user.role)) {
         return res.status(403).json({ message: "Forbidden" });
@@ -65,7 +65,7 @@ export const optionalAuthMiddleware = async (req: Request, res: Response, next: 
     const payload = jwt.verify(token, JWT_SECRET) as any;
     const user = await UserModel.findById(payload.id).select("role fullName");
     if (user) {
-      (req as any).user = { id: payload.id, role: user.role, fullName: user.fullName };
+      (req as any).user = { id: payload.id, _id: payload.id, role: user.role, fullName: user.fullName };
     }
   } catch {
     // Silently proceed for unauthenticated requests

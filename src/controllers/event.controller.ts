@@ -905,7 +905,7 @@ export const issueCertificates = async (req: Request, res: Response, next: NextF
 export const getEventCertificates = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const certs = await Certificate.find({ associatedEvent: req.params.id })
-      .populate("recipient", "fullName email imageUrl studentId department batch session")
+      .populate("recipient", "fullName email imageUrl imagePosition studentId department batch session")
       .populate("template")
       .sort({ createdAt: -1 })
       .lean();
@@ -933,9 +933,25 @@ export const getEventCertificates = async (req: Request, res: Response, next: Ne
 export const claimParticipation = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id: eventId } = req.params;
-    const userId = (req as any).user?._id;
-    if (!userId) {
-      return res.status(401).json({ success: false, message: "Authentication required to claim participation." });
+    const { fullName, email, studentId, department, phone, role, notes } = req.body;
+
+    const claimFullName = (fullName || (req as any).user?.fullName || "").trim();
+    const claimEmail = (email || (req as any).user?.email || "").trim().toLowerCase();
+
+    if (!claimFullName || !claimEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "Full Name and Email Address are required to submit a participation claim.",
+      });
+    }
+
+    let userId = (req as any).user?._id || (req as any).user?.id;
+    // If not logged in, check if user with this email exists in DB
+    if (!userId && claimEmail) {
+      const existingUser = await User.findOne({ email: claimEmail }).select("_id fullName studentId department phone");
+      if (existingUser) {
+        userId = existingUser._id;
+      }
     }
 
     const event = await Event.findById(eventId);
@@ -962,20 +978,22 @@ export const claimParticipation = async (req: Request, res: Response, next: Next
 
     // Check if user already submitted a claim
     event.participationClaims = event.participationClaims || [];
-    const existingClaim = event.participationClaims.find(
-      (c: any) => c.userId?.toString() === userId.toString()
-    );
+    const existingClaim = event.participationClaims.find((c: any) => {
+      if (userId && c.userId && c.userId.toString() === userId.toString()) return true;
+      if (c.email && c.email.toLowerCase() === claimEmail) return true;
+      return false;
+    });
     if (existingClaim) {
       return res.status(400).json({
         success: false,
-        message: `You have already submitted a claim for this event (Status: ${existingClaim.status}).`,
+        message: `A participation claim has already been submitted with this email (Status: ${existingClaim.status}).`,
       });
     }
 
     // Check if already registered or an approved attendee
-    const isAlreadyAttendee = (event.attendees || []).some(
-      (a: any) => a.toString() === userId.toString()
-    );
+    const isAlreadyAttendee =
+      (userId && (event.attendees || []).some((a: any) => a.toString() === userId.toString())) ||
+      (event.approvedParticipants || []).some((ap: any) => ap.email?.toLowerCase() === claimEmail);
     if (isAlreadyAttendee) {
       return res.status(400).json({
         success: false,
@@ -983,15 +1001,13 @@ export const claimParticipation = async (req: Request, res: Response, next: Next
       });
     }
 
-    const { fullName, email, studentId, department, phone, role, notes } = req.body;
-
     event.participationClaims.push({
-      userId,
-      fullName: (fullName || (req as any).user.fullName || "").trim(),
-      email: (email || (req as any).user.email || "").trim(),
-      studentId: (studentId || (req as any).user.studentId || "").trim(),
-      department: (department || (req as any).user.department || "").trim(),
-      phone: (phone || (req as any).user.phone || "").trim(),
+      userId: userId || undefined,
+      fullName: claimFullName,
+      email: claimEmail,
+      studentId: (studentId || (req as any).user?.studentId || "").trim(),
+      department: (department || (req as any).user?.department || "").trim(),
+      phone: (phone || (req as any).user?.phone || "").trim(),
       role: (role || "Participant").trim(),
       notes: (notes || "").trim(),
       status: "pending",
@@ -1016,7 +1032,7 @@ export const claimParticipation = async (req: Request, res: Response, next: Next
 export const getMyParticipationClaim = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id: eventId } = req.params;
-    const userId = (req as any).user?._id;
+    const userId = (req as any).user?._id || (req as any).user?.id;
     if (!userId) {
       return res.status(200).json({ success: true, data: null, isAttendee: false });
     }
@@ -1051,7 +1067,7 @@ export const getMyParticipationClaim = async (req: Request, res: Response, next:
 export const approveParticipationClaim = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id: eventId, claimId } = req.params;
-    const adminId = (req as any).user?._id;
+    const adminId = (req as any).user?._id || (req as any).user?.id;
 
     const event = await Event.findById(eventId);
     if (!event) {
@@ -1068,19 +1084,32 @@ export const approveParticipationClaim = async (req: Request, res: Response, nex
     claim.reviewedAt = new Date();
     claim.reviewedBy = adminId;
 
-    // Add to attendees if not already present
-    if (!event.attendees.some((a: any) => a.toString() === claim.userId.toString())) {
-      event.attendees.push(claim.userId);
+    // Check if a user with this email exists in DB if claim has no userId
+    let targetUserId = claim.userId;
+    if (!targetUserId && claim.email) {
+      const matchedUser = await User.findOne({ email: claim.email.toLowerCase().trim() }).select("_id");
+      if (matchedUser) {
+        targetUserId = matchedUser._id;
+        claim.userId = matchedUser._id;
+      }
+    }
+
+    // Add to attendees if user found and not already present
+    if (targetUserId && !event.attendees.some((a: any) => a.toString() === targetUserId.toString())) {
+      event.attendees.push(targetUserId);
     }
 
     // Add to approvedParticipants if not already present
     event.approvedParticipants = event.approvedParticipants || [];
-    const alreadyInApproved = event.approvedParticipants.some(
-      (p: any) => p.userId?.toString() === claim.userId.toString()
-    );
+    const alreadyInApproved = event.approvedParticipants.some((p: any) => {
+      if (targetUserId && p.userId && p.userId.toString() === targetUserId.toString()) return true;
+      if (p.email && p.email.toLowerCase() === claim.email.toLowerCase()) return true;
+      return false;
+    });
+
     if (!alreadyInApproved) {
       event.approvedParticipants.push({
-        userId: claim.userId,
+        userId: targetUserId || undefined,
         fullName: claim.fullName,
         email: claim.email,
         studentId: claim.studentId,
@@ -1093,10 +1122,12 @@ export const approveParticipationClaim = async (req: Request, res: Response, nex
 
     await event.save();
 
-    // Link event to user profile
-    await User.findByIdAndUpdate(claim.userId, {
-      $addToSet: { eventsAttended: event._id },
-    });
+    // Link event to user profile if user exists
+    if (targetUserId) {
+      await User.findByIdAndUpdate(targetUserId, {
+        $addToSet: { eventsAttended: event._id },
+      });
+    }
 
     // In-app notification to claimant
     createNotification({
@@ -1127,7 +1158,7 @@ export const approveParticipationClaim = async (req: Request, res: Response, nex
 export const rejectParticipationClaim = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id: eventId, claimId } = req.params;
-    const adminId = (req as any).user?._id;
+    const adminId = (req as any).user?._id || (req as any).user?.id;
 
     const event = await Event.findById(eventId);
     if (!event) {
@@ -1145,19 +1176,25 @@ export const rejectParticipationClaim = async (req: Request, res: Response, next
     claim.reviewedBy = adminId;
 
     // Remove from attendees and approvedParticipants if previously added
-    event.attendees = (event.attendees || []).filter(
-      (a: any) => a.toString() !== claim.userId.toString()
-    );
-    event.approvedParticipants = (event.approvedParticipants || []).filter(
-      (p: any) => p.userId?.toString() !== claim.userId.toString()
-    );
+    if (claim.userId) {
+      event.attendees = (event.attendees || []).filter(
+        (a: any) => a.toString() !== claim.userId!.toString()
+      );
+    }
+    event.approvedParticipants = (event.approvedParticipants || []).filter((p: any) => {
+      if (claim.userId && p.userId && p.userId.toString() === claim.userId.toString()) return false;
+      if (claim.email && p.email && p.email.toLowerCase() === claim.email.toLowerCase()) return false;
+      return true;
+    });
 
     await event.save();
 
     // Pull from user eventsAttended
-    await User.findByIdAndUpdate(claim.userId, {
-      $pull: { eventsAttended: event._id },
-    });
+    if (claim.userId) {
+      await User.findByIdAndUpdate(claim.userId, {
+        $pull: { eventsAttended: event._id },
+      });
+    }
 
     res.status(200).json({
       success: true,

@@ -18,7 +18,7 @@ import {
   claimParticipation, getMyParticipationClaim,
   approveParticipationClaim, rejectParticipationClaim,
 } from "../controllers/event.controller";
-import { authMiddleware } from "../middlewares/auth.middleware";
+import { authMiddleware, optionalAuthMiddleware } from "../middlewares/auth.middleware";
 import { createUploader } from "../config/multer.config";
 
 const router = Router();
@@ -34,8 +34,8 @@ router.patch("/:id", authMiddleware(["admin", "moderator"]), handleUpdateEvent);
 router.delete("/:id", authMiddleware(["admin", "moderator"]), handleDeleteEvent);
 
 // ── Participation Claims (Archived / Past Events) ───────────────────────────
-router.post("/:id/claim-participation", authMiddleware(), claimParticipation);
-router.get("/:id/my-claim", authMiddleware(), getMyParticipationClaim);
+router.post("/:id/claim-participation", optionalAuthMiddleware, claimParticipation);
+router.get("/:id/my-claim", optionalAuthMiddleware, getMyParticipationClaim);
 router.patch("/:id/claims/:claimId/approve", authMiddleware(["admin", "moderator"]), approveParticipationClaim);
 router.patch("/:id/claims/:claimId/reject", authMiddleware(["admin", "moderator"]), rejectParticipationClaim);
 

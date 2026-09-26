@@ -24,6 +24,8 @@ import instructorRoutes from "./routes/instructor.routes";
 import certificateTemplateRoutes from "./routes/certificateTemplate.routes";
 import notificationRoutes from "./routes/notification.routes";
 import emailRoutingRoutes from "./routes/emailRouting.routes";
+import instituteRoutes from "./routes/institute.routes";
+import analyticsRoutes from "./routes/analytics.routes";
 import { getGalleryMedia } from "./controllers/event.controller";
 
 // Ensure all models are registered with Mongoose before any route handler runs
@@ -36,6 +38,8 @@ import "./models/Project.model";
 import "./models/Blog.model";
 import "./models/Course.model";
 import "./models/Instructor.model";
+import "./models/Institute.model";
+import "./models/ToolUsage.model";
 import cors, { CorsOptions } from "cors";
 import globalErrorHandler from "./middlewares/errorMiddleware";
 import swaggerUi from "swagger-ui-express";
@@ -135,6 +139,8 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/courses", courseRoutes);
 app.use("/api/instructors", instructorRoutes);
 app.use("/api/email-routing", emailRoutingRoutes);
+app.use("/api/institutes", instituteRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 app.get("/", (req, res) => {
   res.send("Welcome to the API! Visit /api/docs for documentation.");

@@ -25,7 +25,7 @@ export const verifyCertificate = async (req: Request, res: Response, next: NextF
     const cert = await Certificate.findOne({
       certificateId: { $regex: new RegExp(`^${cleanId}$`, "i") },
     })
-      .populate("recipient", "fullName email studentId department batch session imageUrl role designation clubRole")
+      .populate("recipient", "fullName email studentId department batch session imageUrl imagePosition role designation clubRole")
       .populate("associatedEvent", "title slug date location category coverImageUrl")
       .populate("issuedBy", "fullName email role designation")
       .populate("template")
@@ -495,7 +495,7 @@ export const updateCertificate = async (req: Request, res: Response, next: NextF
     await cert.save();
 
     const populated = await Certificate.findById(cert._id)
-      .populate("recipient", "fullName email studentId department batch session imageUrl")
+      .populate("recipient", "fullName email studentId department batch session imageUrl imagePosition")
       .populate("associatedEvent", "title slug date location category")
       .populate("issuedBy", "fullName role")
       .populate("template", "name type theme primaryColor borderStyle isDefault")
@@ -593,7 +593,7 @@ export const listCertificates = async (req: Request, res: Response, next: NextFu
 
     const [certs, total] = await Promise.all([
       Certificate.find(query)
-        .populate("recipient", "fullName email studentId department batch session imageUrl")
+        .populate("recipient", "fullName email studentId department batch session imageUrl imagePosition")
         .populate("associatedEvent", "title slug date location category")
         .populate("issuedBy", "fullName role")
         .populate("template", "name type theme primaryColor borderStyle isDefault")
@@ -656,7 +656,7 @@ export const getEventCertificates = async (req: Request, res: Response, next: Ne
   try {
     const { eventId } = req.params;
     const certs = await Certificate.find({ associatedEvent: eventId })
-      .populate("recipient", "fullName email studentId department batch session imageUrl")
+      .populate("recipient", "fullName email studentId department batch session imageUrl imagePosition")
       .populate("template")
       .sort({ issueDate: -1, createdAt: -1 })
       .lean();

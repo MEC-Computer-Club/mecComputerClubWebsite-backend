@@ -5,6 +5,14 @@ export interface ICourse extends Document {
   courseCode: string;
   courseCredit?: string;
   department: string;
+  institute?: string;
+  semester?: number;
+  session?: string;
+  isElective?: boolean;
+  changeType?: "addition" | "replace" | "shuffle" | "reduction" | "none";
+  replacesCourseCode?: string | null;
+  shuffledFromSemester?: number | null;
+  isDiscontinued?: boolean;
   status: "approved" | "pending";
   submittedBy?: mongoose.Types.ObjectId | null;
   reviewedBy?: mongoose.Types.ObjectId | null;
@@ -34,6 +42,44 @@ const courseSchema: Schema<ICourse> = new Schema(
       required: [true, "Department is required"],
       trim: true,
     },
+    institute: {
+      type: String,
+      trim: true,
+      default: "University of Dhaka (Technology Unit)",
+    },
+    semester: {
+      type: Number,
+      min: 1,
+      max: 8,
+      default: null,
+    },
+    session: {
+      type: String,
+      trim: true,
+      default: "2021-22",
+    },
+    isElective: {
+      type: Boolean,
+      default: false,
+    },
+    changeType: {
+      type: String,
+      enum: ["addition", "replace", "shuffle", "reduction", "none"],
+      default: "none",
+    },
+    replacesCourseCode: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    shuffledFromSemester: {
+      type: Number,
+      default: null,
+    },
+    isDiscontinued: {
+      type: Boolean,
+      default: false,
+    },
     status: {
       type: String,
       enum: ["approved", "pending"],
@@ -56,8 +102,9 @@ const courseSchema: Schema<ICourse> = new Schema(
   }
 );
 
-// Course code is unique per department (reusable across departments)
-courseSchema.index({ courseCode: 1, department: 1 }, { unique: true });
+// Course code is unique per department and session
+courseSchema.index({ courseCode: 1, department: 1, session: 1 }, { unique: true });
+courseSchema.index({ department: 1, semester: 1, session: 1, status: 1 });
 courseSchema.index({ department: 1, status: 1 });
 courseSchema.index({ courseName: "text", courseCode: "text" });
 

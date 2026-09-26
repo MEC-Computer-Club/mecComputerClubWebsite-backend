@@ -229,6 +229,16 @@ export const toggleFeaturedProject = async (req: Request, res: Response, next: N
     if (!project) return res.status(404).json({ success: false, message: "Project not found" });
 
     const newFeatured = req.body.featured !== undefined ? Boolean(req.body.featured) : !project.featured;
+    if (newFeatured && !project.featured) {
+      const featuredCount = await Project.countDocuments({ featured: true });
+      if (featuredCount >= 3) {
+        return res.status(400).json({
+          success: false,
+          message: "Maximum 3 projects can be featured on the Home page. Please unfeature an existing project first.",
+        });
+      }
+    }
+
     project.featured = newFeatured;
     await project.save();
 
@@ -264,6 +274,14 @@ export const updateProject = async (req: Request, res: Response, next: NextFunct
     // Only admins can modify the featured status
     if (!isAdmin) {
       delete updates.featured;
+    } else if (updates.featured && !project.featured) {
+      const featuredCount = await Project.countDocuments({ featured: true });
+      if (featuredCount >= 3) {
+        return res.status(400).json({
+          success: false,
+          message: "Maximum 3 projects can be featured on the Home page. Please unfeature an existing project first.",
+        });
+      }
     }
 
     if (updates.githubRepositories !== undefined || updates.githubLinks !== undefined || updates.githubLink !== undefined || updates.repoUrl !== undefined) {

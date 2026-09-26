@@ -265,3 +265,76 @@ export const exportSubmissions = async (req: Request, res: Response, next: NextF
     next(error);
   }
 };
+
+/**
+ * Delete a submission (Admin/Moderator)
+ */
+export const deleteSubmission = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { submissionId } = req.params;
+    const submission = await FormSubmissionModel.findById(submissionId);
+    if (!submission) {
+      return next(new AppError("Submission not found", 404));
+    }
+
+    // Delete any media files in responses
+    if (submission.responses) {
+      const { deleteFromCloudinary } = await import("../services/upload.service");
+      for (const val of Object.values(submission.responses)) {
+        if (typeof val === "string" && val.includes("cloudinary.com")) {
+          try {
+            const parts = val.split("/upload/");
+            if (parts.length > 1) {
+              let pubId = parts[1].replace(/^v\d+\//, "");
+              const lastDot = pubId.lastIndexOf(".");
+              if (lastDot !== -1) pubId = pubId.substring(0, lastDot);
+              await deleteFromCloudinary(pubId);
+            }
+          } catch (cErr) {
+            console.warn("Failed to delete file from Cloudinary:", cErr);
+          }
+        }
+      }
+    }
+
+    await FormSubmissionModel.findByIdAndDelete(submissionId);
+
+    res.status(200).json({
+      success: true,
+      message: "Submission deleted successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Update/modify a submission responses (Admin/Moderator)
+ */
+export const updateSubmission = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { submissionId } = req.params;
+    const { responses } = req.body;
+
+    const submission = await FormSubmissionModel.findById(submissionId);
+    if (!submission) {
+      return next(new AppError("Submission not found", 404));
+    }
+
+    if (responses) {
+      submission.responses = responses;
+    }
+    await submission.save();
+
+    const updated = await FormSubmissionModel.findById(submissionId).populate("userId", "fullName email");
+
+    res.status(200).json({
+      success: true,
+      message: "Submission updated successfully",
+      data: updated,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

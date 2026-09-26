@@ -63,7 +63,7 @@ export interface IEventSponsor {
 
 export interface IParticipationClaim {
   _id?: string;
-  userId: mongoose.Types.ObjectId;
+  userId?: mongoose.Types.ObjectId;
   fullName: string;
   email: string;
   studentId?: string;
@@ -203,7 +203,7 @@ const EventSponsorSchema = new Schema<IEventSponsor>({
 }, { _id: true });
 
 const ParticipationClaimSchema = new Schema<IParticipationClaim>({
-  userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+  userId: { type: Schema.Types.ObjectId, ref: "User", required: false },
   fullName: { type: String, required: true, trim: true },
   email: { type: String, required: true, trim: true },
   studentId: { type: String, trim: true },

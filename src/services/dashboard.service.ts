@@ -169,7 +169,7 @@ export const getMembersDataService = async (params: GetMembersParams = {}) => {
     const [members, total, countsData] = await Promise.all([
       User.find(query)
         .select(
-          "_id fullName imageUrl email role clubRole customRole designation applicationStatus profileStatus studentId department session batch contactNumber address bio socialLinks isGraduated passingYear eventsAttended certificates projectsContributed createdAt approvedAt approvedBy rejectionReason"
+          "_id fullName imageUrl imagePosition email role clubRole customRole designation applicationStatus profileStatus studentId department session batch contactNumber address bio socialLinks isGraduated passingYear eventsAttended certificates projectsContributed createdAt approvedAt approvedBy rejectionReason"
         )
         .sort({ createdAt: -1 })
         .skip(skip)

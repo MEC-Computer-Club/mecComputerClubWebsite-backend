@@ -94,6 +94,16 @@ export const toggleFeaturedBlog = async (req: Request, res: Response, next: Next
     if (!blog) return res.status(404).json({ success: false, message: "Blog not found" });
 
     const newFeatured = req.body.featured !== undefined ? Boolean(req.body.featured) : !blog.featured;
+    if (newFeatured && !blog.featured) {
+      const featuredCount = await Blog.countDocuments({ featured: true });
+      if (featuredCount >= 3) {
+        return res.status(400).json({
+          success: false,
+          message: "Maximum 3 blogs can be featured on the Home page. Please unfeature an existing blog first.",
+        });
+      }
+    }
+
     blog.featured = newFeatured;
     await blog.save();
 
@@ -129,6 +139,14 @@ export const updateBlog = async (req: Request, res: Response, next: NextFunction
     const update = { ...req.body };
     if (!isPrivileged && update.featured !== undefined) {
       delete update.featured;
+    } else if (isPrivileged && update.featured && !existing.featured) {
+      const featuredCount = await Blog.countDocuments({ featured: true });
+      if (featuredCount >= 3) {
+        return res.status(400).json({
+          success: false,
+          message: "Maximum 3 blogs can be featured on the Home page. Please unfeature an existing blog first.",
+        });
+      }
     }
     if (update.isPublished && !update.publishedAt) update.publishedAt = new Date();
     const blog = await Blog.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
