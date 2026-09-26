@@ -23,7 +23,7 @@ export const getAllBlogs = async (req: Request, res: Response, next: NextFunctio
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;
     let query = Blog.find(filter)
       .select("-content")
-      .populate("author", "fullName imageUrl")
+      .populate("author", "fullName imageUrl imagePosition department batch session designation role")
       .sort({ featured: -1, publishedAt: -1, createdAt: -1 });
 
     if (limit && !isNaN(limit)) {
@@ -39,7 +39,7 @@ export const getMyBlogs = async (req: Request, res: Response, next: NextFunction
   try {
     const authorId = (req as any).user?.id;
     const blogs = await Blog.find({ author: authorId })
-      .populate("author", "fullName imageUrl")
+      .populate("author", "fullName imageUrl imagePosition department batch session designation role")
       .sort({ createdAt: -1 })
       .lean();
     res.status(200).json({ success: true, data: blogs });
@@ -48,7 +48,9 @@ export const getMyBlogs = async (req: Request, res: Response, next: NextFunction
 
 export const getBlogById = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const blog = await Blog.findById(req.params.id).populate("author", "fullName imageUrl").lean();
+    const blog = await Blog.findById(req.params.id)
+      .populate("author", "fullName imageUrl imagePosition department batch session designation role")
+      .lean();
     if (!blog) return res.status(404).json({ success: false, message: "Blog not found" });
     res.status(200).json({ success: true, data: blog });
   } catch (error) { next(error); }
@@ -56,7 +58,9 @@ export const getBlogById = async (req: Request, res: Response, next: NextFunctio
 
 export const getBlogBySlug = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const blog = await Blog.findOne({ slug: req.params.slug }).populate("author", "fullName imageUrl").lean();
+    const blog = await Blog.findOne({ slug: req.params.slug })
+      .populate("author", "fullName imageUrl imagePosition department batch session designation role")
+      .lean();
     if (!blog) return res.status(404).json({ success: false, message: "Blog not found" });
     res.status(200).json({ success: true, data: blog });
   } catch (error) { next(error); }

@@ -45,14 +45,59 @@ export const createSponsor = async (req: Request, res: Response, next: NextFunct
   } catch (error) { next(error); }
 };
 
+const sanitizeSponsorForPublic = (s: any) => {
+  const { contactName, contactEmail, contactPhone, notes, amountOrValue, ...rest } = s;
+  if (Array.isArray(rest.sponsorships)) {
+    rest.sponsorships = rest.sponsorships.map((rec: any) => {
+      const { amountOrValue, notes: recNotes, ...recRest } = rec;
+      return recRest;
+    });
+  }
+  return rest;
+};
+
 export const getAllSponsors = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter: Record<string, any> = {};
     if (req.query.active === "true") filter.isActive = true;
     if (req.query.category) filter.category = req.query.category;
     if (req.query.showOnHome === "true") filter.showOnHome = true;
-    const sponsors = await Sponsor.find(filter).sort({ createdAt: -1 }).lean();
-    res.status(200).json({ success: true, data: sponsors });
+
+    const userRole = (req as any).user?.role;
+    const isStaff = userRole === "admin" || userRole === "moderator";
+
+    // Public users should only see active sponsors unless explicitly requesting
+    if (!isStaff && req.query.active === undefined) {
+      filter.isActive = true;
+    }
+
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit as string) || 20);
+    const isAll = req.query.all === "true";
+
+    const total = await Sponsor.countDocuments(filter);
+    const totalPages = isAll ? 1 : (Math.ceil(total / limit) || 1);
+
+    let query = Sponsor.find(filter).sort({ createdAt: -1 });
+    if (!isAll) {
+      query = query.skip((page - 1) * limit).limit(limit);
+    }
+
+    const sponsors = await query.lean();
+    const data = isStaff ? sponsors : sponsors.map(sanitizeSponsorForPublic);
+
+    res.status(200).json({
+      success: true,
+      data,
+      meta: {
+        total,
+        page: isAll ? 1 : page,
+        limit: isAll ? total : limit,
+        totalPages,
+        hasNextPage: isAll ? false : page < totalPages,
+        hasPrevPage: isAll ? false : page > 1,
+      },
+    });
   } catch (error) { next(error); }
 };
 
@@ -60,7 +105,12 @@ export const getSponsorById = async (req: Request, res: Response, next: NextFunc
   try {
     const sponsor = await Sponsor.findById(req.params.id).lean();
     if (!sponsor) return res.status(404).json({ success: false, message: "Sponsor not found" });
-    res.status(200).json({ success: true, data: sponsor });
+
+    const userRole = (req as any).user?.role;
+    const isStaff = userRole === "admin" || userRole === "moderator";
+    const data = isStaff ? sponsor : sanitizeSponsorForPublic(sponsor);
+
+    res.status(200).json({ success: true, data });
   } catch (error) { next(error); }
 };
 
