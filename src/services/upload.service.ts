@@ -1,7 +1,6 @@
 import { v2 as cloudinary } from "cloudinary";
 import { IUploadResult } from "../types/upload.types";
-import dotenv from "dotenv";
-dotenv.config();
+import "../config/env";
 
 // Ensure Cloudinary is configured even if multer.config.ts hasn't been imported yet
 cloudinary.config({

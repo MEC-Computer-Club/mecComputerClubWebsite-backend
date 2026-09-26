@@ -1,8 +1,7 @@
 import mongoose from "mongoose";
-import dotenv from "dotenv";
-dotenv.config();
+import "./env";
 
-const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/mec_computer_club";
+const getMongoUri = () => process.env.MONGO_URI || "mongodb://localhost:27017/mec_computer_club";
 
 let cachedConnection: typeof mongoose | null = null;
 let migrationRan = false;
@@ -105,7 +104,7 @@ export const connectDB = async () => {
     return cachedConnection;
   }
   try {
-    cachedConnection = await mongoose.connect(MONGO_URI);
+    cachedConnection = await mongoose.connect(getMongoUri());
     console.log("Mongo connected");
     runSchemaCleanupMigration().catch(() => {});
     return cachedConnection;

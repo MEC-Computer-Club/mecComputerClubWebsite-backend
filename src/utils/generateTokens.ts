@@ -1,7 +1,6 @@
 import jwt from "jsonwebtoken";
-import dotenv from "dotenv";
+import "../config/env";
 import { ObjectId } from "mongoose";
-dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET || "secret";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";

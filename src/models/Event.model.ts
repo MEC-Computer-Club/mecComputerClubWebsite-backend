@@ -232,7 +232,7 @@ const EventContributorSchema = new Schema<IEventContributor>({
 const EventSchema: Schema = new Schema(
   {
     title: { type: String, required: [true, "Event title is required"], trim: true },
-    slug: { type: String, trim: true, index: true },
+    slug: { type: String, trim: true },
     description: { type: String, required: [true, "Event description is required"], trim: true },
     date: { type: Date, required: [true, "Event date is required"], index: true },
     endDate: { type: Date },
