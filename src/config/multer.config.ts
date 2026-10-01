@@ -73,3 +73,72 @@ export const createFileUploader = (defaultFolder: string) => {
     },
   });
 };
+
+export const createQuestionFileUploader = (defaultFolder: string = "questions") => {
+  const isCloudinaryConfigured = Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET &&
+      process.env.CLOUDINARY_CLOUD_NAME !== "your_cloudinary_cloud_name"
+  );
+
+  let storage: multer.StorageEngine;
+
+  if (isCloudinaryConfigured) {
+    storage = new CloudinaryStorage({
+      cloudinary: cloudinary,
+      params: async (req: any, file: any) => {
+        const desiredName = path.parse(file.originalname).name;
+        const folder = req.query?.folder || req.body?.folder || defaultFolder;
+
+        return {
+          folder: `uploads/${folder}`,
+          resource_type: "auto",
+          public_id: `${sanitizeName(desiredName)}-${Date.now()}`,
+        };
+      },
+    });
+  } else {
+    // Disk storage fallback for local development & testing
+    const uploadDir = path.join(process.cwd(), "public", "uploads", defaultFolder);
+    const fs = require("fs");
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    storage = multer.diskStorage({
+      destination: (req, file, cb) => {
+        cb(null, uploadDir);
+      },
+      filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".pdf";
+        const desiredName = sanitizeName(path.parse(file.originalname).name);
+        cb(null, `${desiredName}-${Date.now()}${ext}`);
+      },
+    });
+  }
+
+  const fileFilter = (req: any, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const isPdf = file.mimetype === "application/pdf" || ext === ".pdf";
+    const isImage =
+      file.mimetype.startsWith("image/") ||
+      [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"].includes(ext);
+
+    if (isPdf || isImage) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only PDF documents and image files (PNG, JPG, WEBP, GIF) are allowed for question papers"));
+    }
+  };
+
+  return multer({
+    storage,
+    fileFilter,
+    limits: {
+      fileSize: 35 * 1024 * 1024, // 35MB limit
+    },
+  });
+};
+
+export const createQuestionPdfUploader = createQuestionFileUploader;
