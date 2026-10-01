@@ -27,8 +27,8 @@ router.get("/user/:userId", getUserCertificates);
 // Public/Admin: get all certificates for an event
 router.get("/event/:eventId", getEventCertificates);
 
-// Admin/Executive: list all certificates (with search & filters)
-router.get("/", authMiddleware(["admin", "moderator", "executive"]), listCertificates);
+// Admin/Executive/Advisor: list all certificates (with search & filters)
+router.get("/", authMiddleware(["admin", "moderator", "executive", "advisor"]), listCertificates);
 
 // Admin/Executive: create an individual certificate
 router.post("/", authMiddleware(["admin", "moderator", "executive"]), createCertificate);

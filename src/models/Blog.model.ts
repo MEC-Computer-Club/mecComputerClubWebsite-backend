@@ -16,6 +16,7 @@ export interface IBlog extends Document {
   likes: mongoose.Types.ObjectId[];
   likesCount: number;
   featured?: boolean;
+  readTime?: number;
 }
 
 const BlogSchema: Schema = new Schema(
@@ -35,6 +36,7 @@ const BlogSchema: Schema = new Schema(
     likes: [{ type: Schema.Types.ObjectId, ref: "User" }],
     likesCount: { type: Number, default: 0 },
     featured: { type: Boolean, default: false, index: true },
+    readTime: { type: Number, default: 1 },
   },
   { timestamps: true }
 );
@@ -42,8 +44,13 @@ const BlogSchema: Schema = new Schema(
 BlogSchema.index({ isPublished: 1, featured: -1, publishedAt: -1, createdAt: -1 });
 BlogSchema.index({ author: 1, createdAt: -1 });
 
-// Auto-generate unique slug from title if not provided
+// Auto-generate unique slug and compute readTime
 BlogSchema.pre("validate", async function (next) {
+  if (this.content) {
+    const text = (this.content as string).replace(/<[^>]*>/g, " ");
+    const words = text.trim().split(/\s+/).filter(Boolean).length;
+    this.readTime = Math.max(1, Math.ceil(words / 200));
+  }
   if (!this.slug && this.title) {
     let baseSlug = (this.title as string)
       .toLowerCase()

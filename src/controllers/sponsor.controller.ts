@@ -60,16 +60,12 @@ export const getAllSponsors = async (req: Request, res: Response, next: NextFunc
   try {
     const filter: Record<string, any> = {};
     if (req.query.active === "true") filter.isActive = true;
+    if (req.query.active === "false") filter.isActive = false;
     if (req.query.category) filter.category = req.query.category;
     if (req.query.showOnHome === "true") filter.showOnHome = true;
 
     const userRole = (req as any).user?.role;
     const isStaff = userRole === "admin" || userRole === "moderator";
-
-    // Public users should only see active sponsors unless explicitly requesting
-    if (!isStaff && req.query.active === undefined) {
-      filter.isActive = true;
-    }
 
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.max(1, parseInt(req.query.limit as string) || 20);

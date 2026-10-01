@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import mongoose from "mongoose";
 import FormModel from "../models/Form.model";
 import FormSubmissionModel from "../models/FormSubmission.model";
 import AppError from "../utils/AppError";
@@ -19,7 +20,11 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
     const { formId } = req.params;
     const { responses } = req.body;
 
-    const form = await FormModel.findById(formId);
+    const isObjectId = mongoose.Types.ObjectId.isValid(formId);
+    const form = isObjectId
+      ? await FormModel.findOne({ $or: [{ _id: formId }, { code: formId }] })
+      : await FormModel.findOne({ code: formId });
+
     if (!form || !form.isActive) {
       return next(new AppError("Form not available", 404));
     }
@@ -34,13 +39,13 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
         null;
 
       if (userId) {
-        const existing = await FormSubmissionModel.findOne({ formId, userId });
+        const existing = await FormSubmissionModel.findOne({ formId: form._id, userId });
         if (existing) {
           return next(new AppError("You have already submitted a response for this form.", 400));
         }
       } else if (submittedEmail) {
         // For anonymous submissions, check by email in responses
-        const allSubs = await FormSubmissionModel.find({ formId });
+        const allSubs = await FormSubmissionModel.find({ formId: form._id });
         const emailExists = allSubs.some((sub) => {
           const r = sub.responses as Record<string, any>;
           return (
@@ -63,7 +68,7 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
     }
 
     const submission = await FormSubmissionModel.create({
-      formId,
+      formId: form._id,
       userId: req?.user?._id,
       responses,
     });
@@ -169,8 +174,17 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
  */
 export const getSubmissionsByForm = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.formId);
+    const form = isObjectId
+      ? await FormModel.findOne({ $or: [{ _id: req.params.formId }, { code: req.params.formId }] })
+      : await FormModel.findOne({ code: req.params.formId });
+
+    if (!form) {
+      return next(new AppError("Form not found", 404));
+    }
+
     const submissions = await FormSubmissionModel.find({
-      formId: req.params.formId,
+      formId: form._id,
     }).populate("userId", "fullName email");
 
     res.json({
@@ -192,12 +206,16 @@ export const exportSubmissions = async (req: Request, res: Response, next: NextF
     const { formId } = req.params;
     const format = (req.query.format as string)?.toLowerCase() === "csv" ? "csv" : "xlsx";
 
-    const form = await FormModel.findById(formId);
+    const isObjectId = mongoose.Types.ObjectId.isValid(formId);
+    const form = isObjectId
+      ? await FormModel.findOne({ $or: [{ _id: formId }, { code: formId }] })
+      : await FormModel.findOne({ code: formId });
+
     if (!form) {
       return next(new AppError("Form not found", 404));
     }
 
-    const submissions = await FormSubmissionModel.find({ formId }).populate("userId", "fullName email");
+    const submissions = await FormSubmissionModel.find({ formId: form._id }).populate("userId", "fullName email");
     const fields = form.fields || [];
 
     const headers = ["#", "Submitted By", "Account Email", "Submitted At", ...fields.map((f) => f.label)];

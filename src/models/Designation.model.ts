@@ -4,7 +4,6 @@ export interface IDesignation extends Document {
   title: string;
   slug: string;
   category: "executive" | "advisor" | "general" | "alumni";
-  wing?: string;
   order: number;
   maxSeats?: number;
   defaultRole?: "admin" | "moderator" | "member";
@@ -31,11 +30,6 @@ const designationSchema: Schema<IDesignation> = new Schema(
       enum: ["executive", "advisor", "general", "alumni"],
       default: "executive",
       required: true,
-    },
-    wing: {
-      type: String,
-      trim: true,
-      default: "Core Board",
     },
     order: {
       type: Number,

@@ -9,7 +9,7 @@ import {
 const router = Router();
 
 router.get("/", authMiddleware(["admin", "moderator"]), getEmailRouting);
-router.put("/", authMiddleware(["admin", "moderator"]), updateEmailRouting);
+router.put("/", authMiddleware(["admin"]), updateEmailRouting);
 router.get("/staff-users", authMiddleware(["admin", "moderator"]), getStaffUsers);
 
 export default router;

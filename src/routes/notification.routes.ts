@@ -20,5 +20,7 @@ router.delete("/:id", notificationCtrl.dismiss);
 
 // Admin / Moderator broadcast announcement
 router.post("/broadcast", authMiddleware(["admin", "moderator"]), notificationCtrl.sendBroadcast);
+router.get("/broadcasts", authMiddleware(["admin", "moderator"]), notificationCtrl.getBroadcasts);
+router.delete("/broadcasts/:id", authMiddleware(["admin"]), notificationCtrl.deleteBroadcast);
 
 export default router;

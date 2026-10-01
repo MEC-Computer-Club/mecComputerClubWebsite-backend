@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import ToolUsage from "../models/ToolUsage.model";
 import Institute from "../models/Institute.model";
+import siteAnalyticsService from "../services/siteAnalytics.service";
 
 function escapeRegex(text: string): string {
   return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
@@ -311,3 +312,86 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
     next(error);
   }
 };
+
+/**
+ * Public ingestion endpoint for page views
+ */
+export const collectPageView = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { path, sessionId, isFirstPage, device, browser, os, referrer } = req.body || {};
+    if (!path || typeof path !== "string") {
+      return res.status(400).json({ status: "fail", message: "Path is required" });
+    }
+
+    // Extract client IP (takes first IP if behind a proxy like Cloudflare/Vercel)
+    const rawIp =
+      (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+      req.socket.remoteAddress ||
+      "127.0.0.1";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+
+    siteAnalyticsService.recordPageView({
+      path,
+      ip: rawIp,
+      userAgent,
+      sessionId,
+      isFirstPage: Boolean(isFirstPage),
+      device,
+      browser,
+      os,
+      referrer,
+    });
+
+    res.status(200).json({ status: "success" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Ingestion endpoint for active page duration (supports navigator.sendBeacon)
+ */
+export const collectDuration = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    let body = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        body = {};
+      }
+    }
+
+    const { path, durationSeconds, sessionId, isExit } = body || {};
+    if (path && typeof durationSeconds === "number" && durationSeconds > 0) {
+      siteAnalyticsService.recordPageDuration({
+        path,
+        durationSeconds,
+        sessionId,
+        isExit: Boolean(isExit),
+      });
+    }
+
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Dashboard stats endpoint for dedicated Site & API Analytics page
+ */
+export const getSiteAnalyticsDashboard = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const range = (req.query.range as "24h" | "7d" | "30d" | "90d") || "7d";
+    const stats = await siteAnalyticsService.getAnalyticsSummary(range);
+
+    res.status(200).json({
+      status: "success",
+      data: stats,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

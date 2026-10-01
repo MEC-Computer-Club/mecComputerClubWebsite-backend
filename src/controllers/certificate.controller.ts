@@ -35,7 +35,7 @@ export const verifyCertificate = async (req: Request, res: Response, next: NextF
       return res.status(404).json({
         success: false,
         valid: false,
-        message: "Certificate not found. The ID may be invalid or does not exist in the official MEC-CC registry.",
+        message: "Certificate not found. The ID may be invalid or does not exist in the official MEC Computer Club registry.",
       });
     }
 

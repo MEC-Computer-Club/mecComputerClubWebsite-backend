@@ -7,6 +7,8 @@ import {
   addAttendee, removeAttendee,
   // Winners
   setWinners,
+  // Contributors (Organizers & Volunteers)
+  setContributors,
   // Sponsors
   addEventSponsor, removeEventSponsor,
   // Media
@@ -17,6 +19,9 @@ import {
   // Participation Claims
   claimParticipation, getMyParticipationClaim,
   approveParticipationClaim, rejectParticipationClaim,
+  // Form Submissions & Broadcasts
+  getEventFormSubmissions, bulkApproveFormSubmissions,
+  bulkRejectFormSubmissions, sendEventBroadcast,
 } from "../controllers/event.controller";
 import { authMiddleware, optionalAuthMiddleware } from "../middlewares/auth.middleware";
 import { createUploader } from "../config/multer.config";
@@ -49,6 +54,9 @@ router.delete("/:id/participants/:userId", authMiddleware(["admin", "moderator"]
 // ── Winners ─────────────────────────────────────────────────────────────────
 router.put("/:id/winners", authMiddleware(["admin", "moderator"]), setWinners);
 
+// ── Contributors (Organizers & Volunteers) ───────────────────────────────────
+router.put("/:id/contributors", authMiddleware(["admin", "moderator"]), setContributors);
+
 // ── Sponsors ────────────────────────────────────────────────────────────────
 router.post("/:id/sponsors", authMiddleware(["admin", "moderator"]), addEventSponsor);
 router.delete("/:id/sponsors/:sponsorId", authMiddleware(["admin", "moderator"]), removeEventSponsor);
@@ -60,5 +68,13 @@ router.delete("/:id/media/:mediaId", authMiddleware(["admin", "moderator"]), rem
 // ── Certificates ────────────────────────────────────────────────────────────
 router.post("/:id/certificates", authMiddleware(["admin", "moderator"]), issueCertificates);
 router.get("/:id/certificates", authMiddleware(["admin", "moderator"]), getEventCertificates);
+
+// ── Linked Form Submissions & Bulk Approvals ────────────────────────────────
+router.get("/:id/form-submissions", authMiddleware(["admin", "moderator"]), getEventFormSubmissions);
+router.post("/:id/form-submissions/bulk-approve", authMiddleware(["admin", "moderator"]), bulkApproveFormSubmissions);
+router.post("/:id/form-submissions/bulk-reject", authMiddleware(["admin", "moderator"]), bulkRejectFormSubmissions);
+
+// ── Mailing & Broadcasts ───────────────────────────────────────────────────
+router.post("/:id/broadcast", authMiddleware(["admin", "moderator"]), sendEventBroadcast);
 
 export default router;

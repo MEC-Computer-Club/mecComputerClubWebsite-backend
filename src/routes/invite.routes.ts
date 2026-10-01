@@ -27,7 +27,7 @@ router.patch("/status", authMiddleware(["admin", "moderator", "executive"]), upd
 router.post("/status", authMiddleware(["admin", "moderator", "executive"]), updateInvitationStatus);
 router.post("/cancel", authMiddleware(["admin", "moderator", "executive"]), cancelInvitationCode);
 router.post("/resend", authMiddleware(["admin", "moderator", "executive"]), resendInvitationCode);
-router.delete("/:id", authMiddleware(["admin", "moderator", "executive"]), deleteInvitationCode);
-router.delete("/", authMiddleware(["admin", "moderator", "executive"]), deleteInvitationCode);
+router.delete("/:id", authMiddleware(["admin"]), deleteInvitationCode);
+router.delete("/", authMiddleware(["admin"]), deleteInvitationCode);
 
 export default router;

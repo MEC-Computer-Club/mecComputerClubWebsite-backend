@@ -20,6 +20,10 @@ const DEFAULT_SETTINGS = [
   { key: "batch_current_CSE", value: "6", label: "CSE — Current Junior Batch No.", description: "The most junior (latest) CSE batch number. Registration form shows the last 10 batches up to this number (e.g., 6 shows 1st–6th Batch)." },
   { key: "batch_current_EEE", value: "14", label: "EEE — Current Junior Batch No.", description: "The most junior (latest) EEE batch number. Registration form shows the last 10 batches up to this number." },
   { key: "batch_current_CE", value: "8", label: "CE — Current Junior Batch No.", description: "The most junior (latest) CE batch number. Registration form shows the last 10 batches up to this number." },
+  // Club Room status
+  { key: "club_room_status", value: "closed", label: "Club Room Status", description: "Current status of the club room ('open' or 'closed')." },
+  { key: "club_room_opened_by", value: "", label: "Club Room Opened By", description: "Name of the person who opened the club room." },
+  { key: "club_room_updated_at", value: "", label: "Club Room Last Updated", description: "Timestamp of last room status change." },
 ];
 
 
@@ -86,11 +90,65 @@ export const getPublicBatchSettings = async (req: Request, res: Response, next: 
       }
     }
 
+    const clubRoom = {
+      status: settingsMap["club_room_status"] === "open" ? "open" : "closed",
+      openedBy: settingsMap["club_room_opened_by"] || "",
+      updatedAt: settingsMap["club_room_updated_at"] || "",
+    };
+
     res.status(200).json({
       success: true,
       data: batchMap,
       batches: batchMap,
       settings: settingsMap,
+      clubRoom,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc  Update club room status (open / closed)
+ * @route PATCH /api/site-settings/club-room
+ */
+export const updateClubRoomStatus = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { status } = req.body;
+    if (!status || (status !== "open" && status !== "closed")) {
+      return res.status(400).json({ success: false, message: "Status must be 'open' or 'closed'" });
+    }
+
+    const user = (req as any).user;
+    const openedBy = status === "open" ? (user?.fullName || user?.name || "Club Executive") : "";
+    const updatedAt = new Date().toISOString();
+
+    await Promise.all([
+      SiteSetting.findOneAndUpdate(
+        { key: "club_room_status" },
+        { value: status, label: "Club Room Status", description: "Current status of the club room ('open' or 'closed')." },
+        { upsert: true, new: true }
+      ),
+      SiteSetting.findOneAndUpdate(
+        { key: "club_room_opened_by" },
+        { value: openedBy, label: "Club Room Opened By", description: "Name of the person who opened the club room." },
+        { upsert: true, new: true }
+      ),
+      SiteSetting.findOneAndUpdate(
+        { key: "club_room_updated_at" },
+        { value: updatedAt, label: "Club Room Last Updated", description: "Timestamp of last room status change." },
+        { upsert: true, new: true }
+      ),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: `Club room is now ${status}`,
+      clubRoom: {
+        status,
+        openedBy,
+        updatedAt,
+      },
     });
   } catch (error) {
     next(error);

@@ -6,7 +6,7 @@ const ensureDefaultTemplateExists = async () => {
   const count = await CertificateTemplate.countDocuments();
   if (count === 0) {
     await CertificateTemplate.create({
-      name: "MEC-CC Standard Official (Emerald)",
+      name: "MEC Computer Club Standard Official (Emerald)",
       description: "Official club green theme with brutalist borders and dual signatures.",
       type: "visual",
       theme: "emerald-clean",

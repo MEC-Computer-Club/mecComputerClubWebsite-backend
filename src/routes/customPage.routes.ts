@@ -15,6 +15,6 @@ router.get("/", authMiddleware(["admin", "moderator"]), getAllCustomPages);
 router.get("/:id", authMiddleware(["admin", "moderator"]), getCustomPageById);
 router.post("/", authMiddleware(["admin", "moderator"]), createCustomPage);
 router.patch("/:id", authMiddleware(["admin", "moderator"]), updateCustomPage);
-router.delete("/:id", authMiddleware(["admin", "moderator"]), deleteCustomPage);
+router.delete("/:id", authMiddleware(["admin"]), deleteCustomPage);
 
 export default router;

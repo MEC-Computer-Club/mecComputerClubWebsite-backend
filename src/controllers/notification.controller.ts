@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import * as notificationService from "../services/notification.service";
+import Notification from "../models/Notification.model";
 
 /**
  * GET /api/notifications
@@ -190,5 +191,35 @@ export const sendBroadcast = async (req: Request, res: Response) => {
       success: false,
       message: error.message || "Failed to dispatch broadcast notification",
     });
+  }
+};
+
+/**
+ * GET /api/notifications/broadcasts
+ * Fetch all broadcast announcements
+ */
+export const getBroadcasts = async (req: Request, res: Response) => {
+  try {
+    const broadcasts = await Notification.find({ recipient: null })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+    return res.status(200).json({ success: true, data: broadcasts });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message || "Failed to fetch broadcasts" });
+  }
+};
+
+/**
+ * DELETE /api/notifications/broadcasts/:id
+ * Delete or revoke a broadcast announcement
+ */
+export const deleteBroadcast = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    await Notification.findByIdAndDelete(id);
+    return res.status(200).json({ success: true, message: "Broadcast deleted successfully" });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message || "Failed to delete broadcast" });
   }
 };

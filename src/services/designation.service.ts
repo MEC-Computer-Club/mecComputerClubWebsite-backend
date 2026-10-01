@@ -1,31 +1,32 @@
 import Designation, { IDesignation } from "../models/Designation.model";
 import User from "../models/User.model";
+import { syncCurrentCommitteeFromExecutiveRoles } from "./committee.service";
 
 const DEFAULT_EXECUTIVE_ROLES = [
-  { title: "President", wing: "Core Board", order: 1, defaultRole: "admin", maxSeats: 1 },
-  { title: "Vice President", wing: "Core Board", order: 2, defaultRole: "admin", maxSeats: 2 },
-  { title: "General Secretary", wing: "Core Board", order: 3, defaultRole: "admin", maxSeats: 1 },
-  { title: "Joint Secretary", wing: "Core Board", order: 4, defaultRole: "moderator", maxSeats: 2 },
-  { title: "Organizing Secretary", wing: "Core Board", order: 5, defaultRole: "moderator", maxSeats: 2 },
-  { title: "Creative & Media Executive", wing: "Media & PR Wing", order: 6, defaultRole: "moderator" },
-  { title: "Event Co-Ordinator", wing: "Event & Logistics Wing", order: 7, defaultRole: "moderator" },
-  { title: "Finance Secretary", wing: "Core Board", order: 8, defaultRole: "moderator", maxSeats: 1 },
-  { title: "Resource & Logistics Manager", wing: "Event & Logistics Wing", order: 9, defaultRole: "moderator" },
-  { title: "Public Relations Executive", wing: "Media & PR Wing", order: 10, defaultRole: "moderator" },
-  { title: "Web Administrator", wing: "Tech Wing", order: 11, defaultRole: "admin" },
-  { title: "Competitive Programming Lead", wing: "Tech Wing", order: 12, defaultRole: "moderator" },
-  { title: "Web Development Lead", wing: "Tech Wing", order: 13, defaultRole: "moderator" },
-  { title: "AI & ML Lead", wing: "Tech Wing", order: 14, defaultRole: "moderator" },
-  { title: "Cybersecurity Lead", wing: "Tech Wing", order: 15, defaultRole: "moderator" },
-  { title: "Executive Member", wing: "General Panel", order: 16, defaultRole: "member" },
+  { title: "President", order: 1, defaultRole: "admin", maxSeats: 1 },
+  { title: "Vice President", order: 2, defaultRole: "admin", maxSeats: 2 },
+  { title: "General Secretary", order: 3, defaultRole: "admin", maxSeats: 1 },
+  { title: "Joint Secretary", order: 4, defaultRole: "moderator", maxSeats: 2 },
+  { title: "Organizing Secretary", order: 5, defaultRole: "moderator", maxSeats: 2 },
+  { title: "Creative & Media Executive", order: 6, defaultRole: "moderator" },
+  { title: "Event Co-Ordinator", order: 7, defaultRole: "moderator" },
+  { title: "Finance Secretary", order: 8, defaultRole: "moderator", maxSeats: 1 },
+  { title: "Resource & Logistics Manager", order: 9, defaultRole: "moderator" },
+  { title: "Public Relations Executive", order: 10, defaultRole: "moderator" },
+  { title: "Web Administrator", order: 11, defaultRole: "admin" },
+  { title: "Competitive Programming Lead", order: 12, defaultRole: "moderator" },
+  { title: "Web Development Lead", order: 13, defaultRole: "moderator" },
+  { title: "AI & ML Lead", order: 14, defaultRole: "moderator" },
+  { title: "Cybersecurity Lead", order: 15, defaultRole: "moderator" },
+  { title: "Executive Member", order: 16, defaultRole: "member" },
 ];
 
 const DEFAULT_ADVISOR_ROLES = [
-  { title: "Chief Patron & Principal", wing: "College Administration", order: 1, defaultRole: "member", maxSeats: 1 },
-  { title: "Chief Advisor", wing: "CSE Department", order: 2, defaultRole: "member", maxSeats: 1 },
-  { title: "Technical Advisor", wing: "Faculty Advisory", order: 3, defaultRole: "member" },
-  { title: "Faculty Advisor", wing: "Faculty Advisory", order: 4, defaultRole: "member" },
-  { title: "Honorary Mentor", wing: "Industry Advisory", order: 5, defaultRole: "member" },
+  { title: "Chief Patron & Principal", order: 1, defaultRole: "member", maxSeats: 1 },
+  { title: "Chief Advisor", order: 2, defaultRole: "member", maxSeats: 1 },
+  { title: "Technical Advisor", order: 3, defaultRole: "member" },
+  { title: "Faculty Advisor", order: 4, defaultRole: "member" },
+  { title: "Honorary Mentor", order: 5, defaultRole: "member" },
 ];
 
 function generateSlug(title: string): string {
@@ -70,13 +71,13 @@ export const getDesignationsService = async (category?: string) => {
 
   const designations = await Designation.find(filter).sort({ order: 1, createdAt: 1 }).lean();
 
-  // Attach currently assigned members count and list
+  // Attach currently assigned members count and list (include socialLinks, imagePosition, batch; exclude platform role)
   const titleRegexes = designations.map((d) => new RegExp(`^${d.title.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"));
   const assignedUsers = await User.find({
     applicationStatus: "approved",
     $or: [{ designation: { $in: titleRegexes } }, { customRole: { $in: titleRegexes } }],
   })
-    .select("_id fullName email imageUrl studentId department session designation customRole role clubRole")
+    .select("_id fullName email imageUrl imagePosition studentId department session batch bio socialLinks designation customRole clubRole")
     .lean();
 
   const designationsWithMembers = designations.map((desig) => {
@@ -98,7 +99,6 @@ export const getDesignationsService = async (category?: string) => {
 export const createDesignationService = async (data: {
   title: string;
   category: "executive" | "advisor" | "general" | "alumni";
-  wing?: string;
   order?: number;
   maxSeats?: number;
   defaultRole?: "admin" | "moderator" | "member";
@@ -116,7 +116,6 @@ export const createDesignationService = async (data: {
     title: data.title.trim(),
     slug,
     category: data.category || "executive",
-    wing: data.wing ? data.wing.trim() : "General",
     order,
     maxSeats: data.maxSeats || null,
     defaultRole: data.defaultRole || "member",
@@ -130,7 +129,6 @@ export const updateDesignationService = async (
   id: string,
   updateData: {
     title?: string;
-    wing?: string;
     order?: number;
     maxSeats?: number;
     defaultRole?: "admin" | "moderator" | "member";
@@ -155,7 +153,6 @@ export const updateDesignationService = async (
     );
   }
 
-  if (updateData.wing !== undefined) existing.wing = updateData.wing.trim();
   if (updateData.order !== undefined) existing.order = updateData.order;
   if (updateData.maxSeats !== undefined) existing.maxSeats = updateData.maxSeats;
   if (updateData.defaultRole !== undefined) existing.defaultRole = updateData.defaultRole;
@@ -177,6 +174,7 @@ export const reorderDesignationsService = async (
 
   if (bulkOps.length > 0) {
     await Designation.bulkWrite(bulkOps);
+    await syncCurrentCommitteeFromExecutiveRoles();
   }
 
   return { success: true, count: bulkOps.length };
@@ -202,6 +200,7 @@ export const deleteDesignationService = async (id: string) => {
   );
 
   await Designation.findByIdAndDelete(id);
+  await syncCurrentCommitteeFromExecutiveRoles();
   return { success: true, deletedId: id };
 };
 
@@ -250,6 +249,10 @@ export const assignMembersToDesignationService = async (
     }
 
     await User.updateMany({ _id: { $in: newIds } }, { $set: updatePayload });
+  }
+
+  if (category === "executive") {
+    await syncCurrentCommitteeFromExecutiveRoles();
   }
 
   return { success: true, assignedCount: newIds.length, unassignedCount: toRemove.length };

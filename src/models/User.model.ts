@@ -68,7 +68,7 @@ export interface IUser extends Document {
     discord?: string;
   };
 
-  role: "guest" | "member" | "moderator" | "admin" | "alumni" | "executive";
+  role: "guest" | "member" | "moderator" | "admin" | "alumni" | "executive" | "advisor";
   clubRole?: "member" | "executive" | "alumni" | "advisor";
   /** @deprecated Use `designation` instead. Retained for backward-compatible reads of legacy records. */
   customRole?: string;
@@ -187,7 +187,7 @@ const userSchema: Schema<IUser> = new Schema(
 
     role: {
       type: String,
-      enum: ["guest", "member", "moderator", "admin", "alumni", "executive"],
+      enum: ["guest", "member", "moderator", "admin", "alumni", "executive", "advisor"],
       default: "guest",
     },
     clubRole: {

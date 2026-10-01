@@ -117,12 +117,15 @@ export interface GetMembersParams {
 export const getMembersDataService = async (params: GetMembersParams = {}) => {
   try {
     const {
-      tab = "pending",
       filter = "all",
       search = "",
       page = 1,
       limit = 10,
     } = params;
+
+    const tab = (!params.tab && ["alumni", "member", "executive", "advisor", "all"].includes(filter))
+      ? "all"
+      : (params.tab || "pending");
 
     const query: Record<string, any> = {};
 
@@ -145,8 +148,11 @@ export const getMembersDataService = async (params: GetMembersParams = {}) => {
         query.applicationStatus = { $ne: "pending" };
       } else if (filter === "all" || !filter) {
         query.applicationStatus = { $ne: "pending" };
+      } else if (filter === "alumni") {
+        query.applicationStatus = { $ne: "pending" };
+        query.$or = [{ clubRole: "alumni" }, { role: "alumni" }, { isGraduated: true }];
       } else {
-        // filter by clubRole: "member" | "executive" | "alumni" | "advisor"
+        // filter by clubRole: "member" | "executive" | "advisor"
         query.applicationStatus = { $ne: "pending" };
         query.clubRole = filter;
       }
@@ -159,17 +165,18 @@ export const getMembersDataService = async (params: GetMembersParams = {}) => {
         { fullName: searchRegex },
         { studentId: searchRegex },
         { email: searchRegex },
+        { contactNumber: searchRegex },
       ];
     }
 
     const pageNum = Math.max(1, Number(page) || 1);
-    const limitNum = Math.min(100, Math.max(1, Number(limit) || 10));
+    const limitNum = Math.min(1000, Math.max(1, Number(limit) || 10));
     const skip = (pageNum - 1) * limitNum;
 
     const [members, total, countsData] = await Promise.all([
       User.find(query)
         .select(
-          "_id fullName imageUrl imagePosition email role clubRole customRole designation applicationStatus profileStatus studentId department session batch contactNumber address bio socialLinks isGraduated passingYear eventsAttended certificates projectsContributed createdAt approvedAt approvedBy rejectionReason"
+          "_id fullName imageUrl imagePosition email role clubRole customRole designation applicationStatus profileStatus studentId department session batch contactNumber address bio socialLinks isGraduated passingYear eventsAttended certificates projectsContributed createdAt approvedAt approvedBy rejectionReason security.activeSession"
         )
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -199,16 +206,23 @@ export const getMembersDataService = async (params: GetMembersParams = {}) => {
       bannedCount,
     ] = countsData;
 
-    // Map to a new array and attach activityCounts
+    // Map to a new array and attach activityCounts, isOnline, and lastActiveAt
     const membersWithCounts = (members as any[]).map((member) => {
-      const { eventsAttended, certificates, projectsContributed, ...rest } = member;
+      const { eventsAttended, certificates, projectsContributed, security, ...rest } = member;
       const activityCounts =
         (eventsAttended?.length || 0) +
         (certificates?.length || 0) +
         (projectsContributed?.length || 0);
 
+      const session = security?.activeSession;
+      const lastActive = session?.lastActiveAt ? new Date(session.lastActiveAt).getTime() : 0;
+      // Consider online if isOnline is true and last active was within the past 5 minutes (300,000 ms)
+      const isOnline = Boolean(session?.isOnline && (Date.now() - lastActive < 5 * 60 * 1000));
+
       return {
         ...rest,
+        isOnline,
+        lastActiveAt: session?.lastActiveAt || null,
         activityCounts,
       };
     });
@@ -317,5 +331,186 @@ export const approveOrRejectUser = async (
     }).catch((err) => console.error("Notification creation error:", err));
 
     return user;
+  }
+};
+
+export const getVisualOverviewDataService = async () => {
+  try {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const [
+      totalMembers,
+      onlineMembers,
+      activeTodayMembers,
+      deptAgg,
+      sessionAgg,
+      roleAgg,
+      appStatusAgg,
+      totalEvents,
+      upcomingEvents,
+      recentEvents,
+      totalCertificates,
+      certTypeAgg,
+      totalProjects,
+      projectStatusAgg,
+      techStackAgg,
+    ] = await Promise.all([
+      User.countDocuments({ applicationStatus: { $ne: "pending" } }),
+      User.countDocuments({
+        "security.activeSession.isOnline": true,
+        "security.activeSession.lastActiveAt": { $gte: fiveMinutesAgo },
+      }),
+      User.countDocuments({
+        "security.activeSession.lastActiveAt": { $gte: oneDayAgo },
+      }),
+      User.aggregate([
+        { $match: { applicationStatus: { $ne: "pending" } } },
+        {
+          $group: {
+            _id: { $toUpper: { $ifNull: ["$department", "CSE"] } },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+      ]),
+      User.aggregate([
+        { $match: { applicationStatus: { $ne: "pending" }, session: { $exists: true, $ne: "" } } },
+        { $group: { _id: "$session", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 8 },
+      ]),
+      User.aggregate([
+        { $match: { applicationStatus: { $ne: "pending" } } },
+        { $group: { _id: "$clubRole", count: { $sum: 1 } } },
+      ]),
+      User.aggregate([
+        { $group: { _id: "$applicationStatus", count: { $sum: 1 } } },
+      ]),
+      Event.countDocuments(),
+      Event.countDocuments({ date: { $gte: new Date() } }),
+      Event.find()
+        .select("title date category approvedParticipants pendingParticipants winners")
+        .sort({ date: -1 })
+        .limit(5)
+        .lean(),
+      Certificate.countDocuments(),
+      Certificate.aggregate([
+        { $group: { _id: "$type", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      Project.countDocuments(),
+      Project.aggregate([
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Project.aggregate([
+        { $unwind: "$techStack" },
+        { $group: { _id: "$techStack", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 },
+      ]),
+    ]);
+
+    // Normalize department breakdown
+    const departments = deptAgg.map((d) => ({
+      name: d._id || "Other",
+      count: d.count,
+    }));
+
+    // Normalize session breakdown (merge YYYY-YYYY and YYYY-YY duplicates)
+    const sessionMap = new Map<string, number>();
+    for (const s of sessionAgg) {
+      let key = (s._id || "N/A").trim();
+      const match = key.match(/^(\d{4})[-/](\d{2,4})$/);
+      if (match) {
+        key = `${match[1]}-${match[2].slice(-2)}`;
+      }
+      sessionMap.set(key, (sessionMap.get(key) || 0) + s.count);
+    }
+    const sessions = Array.from(sessionMap.entries())
+      .map(([session, count]) => ({ session, count }))
+      .sort((a, b) => b.session.localeCompare(a.session));
+
+    // Normalize roles
+    const rolesMap: Record<string, string> = {
+      member: "General Members",
+      executive: "Executives",
+      alumni: "Alumni",
+      advisor: "Faculty Advisors",
+    };
+    const roles = roleAgg.map((r) => ({
+      role: r._id || "member",
+      label: rolesMap[r._id] || r._id || "Member",
+      count: r.count,
+    }));
+
+    // Normalize application status
+    const applicationStatus = appStatusAgg.map((a) => ({
+      status: a._id || "pending",
+      count: a.count,
+    }));
+
+    // Normalize certificates by type
+    const certificateTypes = certTypeAgg.map((c) => ({
+      type: c._id || "participation",
+      count: c.count,
+    }));
+
+    // Normalize project statuses
+    const projectStatuses = projectStatusAgg.map((p) => ({
+      status: p._id || "in_progress",
+      count: p.count,
+    }));
+
+    // Normalize top tech stacks
+    const techStacks = techStackAgg.map((t) => ({
+      tech: t._id,
+      count: t.count,
+    }));
+
+    // Calculate participants across recent events
+    const processedEvents = (recentEvents as any[]).map((e) => ({
+      _id: e._id,
+      title: e.title,
+      date: e.date,
+      category: e.category,
+      approvedCount: Array.isArray(e.approvedParticipants) ? e.approvedParticipants.length : 0,
+      pendingCount: Array.isArray(e.pendingParticipants) ? e.pendingParticipants.length : 0,
+      winnersCount: Array.isArray(e.winners) ? e.winners.length : 0,
+    }));
+
+    return {
+      summary: {
+        totalMembers,
+        onlineMembers,
+        offlineMembers: Math.max(0, totalMembers - onlineMembers),
+        activeTodayMembers,
+        totalEvents,
+        upcomingEvents,
+        totalCertificates,
+        totalProjects,
+      },
+      departments,
+      sessions,
+      roles,
+      applicationStatus,
+      events: {
+        total: totalEvents,
+        upcoming: upcomingEvents,
+        recent: processedEvents,
+      },
+      certificates: {
+        total: totalCertificates,
+        byType: certificateTypes,
+      },
+      projects: {
+        total: totalProjects,
+        byStatus: projectStatuses,
+        topTechStack: techStacks,
+      },
+    };
+  } catch (error) {
+    console.error("Error generating visual overview data:", error);
+    throw new Error("Could not retrieve visual overview analytics.");
   }
 };

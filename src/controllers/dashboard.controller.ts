@@ -7,8 +7,10 @@ import {
   getMembersDataService,
   getApplicationByIdService,
   approveOrRejectUser,
+  getVisualOverviewDataService,
 } from "../services/dashboard.service";
 import UserModel from "../models/User.model";
+import { getCloudinaryUsageStats } from "../services/upload.service";
 import app from "../app";
 
 // --- MEMBER CONTROLLER ---
@@ -127,6 +129,31 @@ export const getApplicationDetails = async (req: Request, res: Response, next: N
     });
   } catch (error) {
     console.error("Error while fetching applicant details:", error);
+    next(error);
+  }
+};
+
+export const getVisualOverview = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const data = await getVisualOverviewDataService();
+    return res.status(200).json({
+      success: true,
+      data,
+      message: "Visual overview stats fetched successfully.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCloudinaryStats = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const stats = await getCloudinaryUsageStats();
+    return res.status(200).json({
+      success: true,
+      data: stats,
+    });
+  } catch (error) {
     next(error);
   }
 };

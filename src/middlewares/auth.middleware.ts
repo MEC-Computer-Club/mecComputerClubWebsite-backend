@@ -5,6 +5,8 @@ import UserModel from "../models/User.model";
 
 const JWT_SECRET = process.env.JWT_SECRET || "secret";
 
+const userPresenceMap = new Map<string, number>();
+
 export const authMiddleware = (roles?: string[]) => {
   return async (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
@@ -46,6 +48,20 @@ export const authMiddleware = (roles?: string[]) => {
       if (roles && roles.length && !roles.includes(user.role)) {
         return res.status(403).json({ message: "Forbidden" });
       }
+
+      // Live presence heartbeat: update lastActiveAt & isOnline (throttled to once every 2 mins)
+      const now = Date.now();
+      const lastBeat = userPresenceMap.get(payload.id) || 0;
+      if (now - lastBeat > 2 * 60 * 1000) {
+        userPresenceMap.set(payload.id, now);
+        UserModel.findByIdAndUpdate(payload.id, {
+          $set: {
+            "security.activeSession.lastActiveAt": new Date(now),
+            "security.activeSession.isOnline": true,
+          },
+        }).catch(() => {});
+      }
+
       next();
     } catch (err) {
       console.log("error: ", err);

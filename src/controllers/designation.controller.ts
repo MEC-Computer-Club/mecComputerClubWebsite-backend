@@ -16,7 +16,7 @@ export const getDesignations = async (req: Request, res: Response, next: NextFun
 
 export const createDesignation = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, category, wing, order, maxSeats, defaultRole } = req.body;
+    const { title, category, order, maxSeats, defaultRole } = req.body;
     if (!title || !title.trim()) {
       return res.status(400).json({ status: "fail", message: "Designation title is required" });
     }
@@ -24,7 +24,6 @@ export const createDesignation = async (req: Request, res: Response, next: NextF
     const newDesignation = await designationService.createDesignationService({
       title,
       category: category || "executive",
-      wing,
       order,
       maxSeats,
       defaultRole,

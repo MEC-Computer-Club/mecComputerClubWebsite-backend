@@ -9,6 +9,7 @@ export const createEvent = async (data: Partial<IEvent>): Promise<IEvent> => {
 export const getAllEvents = async (filter: FilterQuery<IEvent> = {}, sort: any = { date: -1 }) => {
   return await Event.find(filter)
     .populate("attendees", "fullName email")
+    .populate("linkedForm", "title code")
     .sort(sort);
 };
 

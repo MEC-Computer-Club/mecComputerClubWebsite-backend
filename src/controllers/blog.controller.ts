@@ -152,6 +152,11 @@ export const updateBlog = async (req: Request, res: Response, next: NextFunction
         });
       }
     }
+    if (update.content) {
+      const text = (update.content as string).replace(/<[^>]*>/g, " ");
+      const words = text.trim().split(/\s+/).filter(Boolean).length;
+      update.readTime = Math.max(1, Math.ceil(words / 200));
+    }
     if (update.isPublished && !update.publishedAt) update.publishedAt = new Date();
     const blog = await Blog.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
     res.status(200).json({ success: true, data: blog });

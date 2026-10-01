@@ -21,15 +21,20 @@ import pageContentRoutes from "./routes/pageContent.routes";
 import courseRoutes from "./routes/course.routes";
 import instructorRoutes from "./routes/instructor.routes";
 import questionArchiveRoutes from "./routes/questionArchive.routes";
+import coverPresetRoutes from "./routes/coverPreset.routes";
 
 import certificateTemplateRoutes from "./routes/certificateTemplate.routes";
 import notificationRoutes from "./routes/notification.routes";
 import emailRoutingRoutes from "./routes/emailRouting.routes";
+import emailTemplateRoutes from "./routes/emailTemplate.routes";
 import instituteRoutes from "./routes/institute.routes";
 import analyticsRoutes from "./routes/analytics.routes";
+import committeeRoutes from "./routes/committee.routes";
 import { getGalleryMedia } from "./controllers/event.controller";
 
 // Ensure all models are registered with Mongoose before any route handler runs
+import "./models/Committee.model";
+import "./models/CoverPreset.model";
 import "./models/Notification.model";
 import "./models/Media.model";
 import "./models/CertificateTemplate.model";
@@ -42,6 +47,9 @@ import "./models/Instructor.model";
 import "./models/Institute.model";
 import "./models/ToolUsage.model";
 import "./models/QuestionArchive.model";
+import "./models/DailyWebAnalytics.model";
+import "./models/DailyApiAnalytics.model";
+import apiAnalyticsMiddleware from "./middlewares/apiAnalytics.middleware";
 import cors, { CorsOptions } from "cors";
 import globalErrorHandler from "./middlewares/errorMiddleware";
 import swaggerUi from "swagger-ui-express";
@@ -94,6 +102,10 @@ const corsOptions: CorsOptions = {
     "X-Requested-With",
     "x-device-id",
     "X-Device-Id",
+    "x-caller-page",
+    "X-Caller-Page",
+    "x-session-id",
+    "X-Session-Id",
     "Accept",
     "Origin",
   ],
@@ -112,6 +124,7 @@ app.use(compression());
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+app.use(apiAnalyticsMiddleware);
 app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // serve uploads folder publicly
@@ -136,14 +149,29 @@ app.use("/api/sponsors", sponsorRoutes);
 app.use("/api/projects", projectRoutes);
 app.use("/api/custom-pages", customPageRoutes);
 app.use("/api/designations", designationRoutes);
+app.use("/api/committees", committeeRoutes);
 app.use("/api/page-content", pageContentRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/courses", courseRoutes);
 app.use("/api/instructors", instructorRoutes);
 app.use("/api/questions", questionArchiveRoutes);
 app.use("/api/email-routing", emailRoutingRoutes);
+app.use("/api/email-templates", emailTemplateRoutes);
 app.use("/api/institutes", instituteRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/cover-presets", coverPresetRoutes);
+
+// Local development: Media Manager
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const localMediaRoutes = require("./routes/mediaManager.routes");
+  const mediaManagerRouter = localMediaRoutes.default || localMediaRoutes;
+  if (mediaManagerRouter) {
+    app.use("/api/media-manager", mediaManagerRouter);
+  }
+} catch {
+  // Kept in local environment only
+}
 
 app.get("/", (req, res) => {
   res.send("Welcome to the API! Visit /api/docs for documentation.");

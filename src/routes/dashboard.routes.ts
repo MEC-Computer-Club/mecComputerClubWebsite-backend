@@ -8,15 +8,17 @@ const router = Router();
 // 🚀 GET METHODS: API ENDPOINTS FOR GETTING DATA
 // -----------------------------------------------------
 router.get("/member-stats", authMiddleware(), dashboardCtrl.getMemberDashboard);
-router.get("/admin-stats", authMiddleware(["admin", "moderator", "executive"]), dashboardCtrl.getAdminDashboard);
-router.get("/members", authMiddleware(["admin", "moderator", "executive"]), dashboardCtrl.getMembersData);
+router.get("/admin-stats", authMiddleware(["admin", "moderator", "executive", "advisor"]), dashboardCtrl.getAdminDashboard);
+router.get("/cloudinary-stats", authMiddleware(["admin", "moderator", "executive", "advisor"]), dashboardCtrl.getCloudinaryStats);
+router.get("/visual-overview", authMiddleware(["admin", "moderator", "executive", "advisor"]), dashboardCtrl.getVisualOverview);
+router.get("/members", authMiddleware(["admin", "moderator", "executive", "advisor"]), dashboardCtrl.getMembersData);
 
 router.get("/application/:id", authMiddleware(["admin", "moderator", "executive"]), dashboardCtrl.getApplicationDetails);
 
 // -----------------------------------------------------
 // 🚀 POST METHODS: API ENDPOINTS FOR CREATES/POST
 // -----------------------------------------------------
-router.post("/members", authMiddleware(["admin", "moderator", "executive"]), dashboardCtrl.getUsersByFiltering);
+router.post("/members", authMiddleware(["admin", "moderator", "executive", "advisor"]), dashboardCtrl.getUsersByFiltering);
 
 // -----------------------------------------------------
 // 🚀 PATCH METHODS: API ENDPOINTS FOR UPDATES

@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import * as userService from "../services/user.service";
 import User, { IUser } from "../models/User.model";
 import InvitationCodeModel from "../models/InvitationCode.model";
@@ -9,7 +10,7 @@ import { Event } from "../models/Event.model";
 import { Project } from "../models/Project.model";
 import { Blog } from "../models/Blog.model";
 import { generateJWT } from "../utils/generateTokens";
-import { uploadToCloudinary, deleteFromCloudinary } from "../services/upload.service";
+import { uploadToCloudinary, deleteFromCloudinary, moveToTrashInCloudinary } from "../services/upload.service";
 import { createBroadcastNotification } from "../services/notification.service";
 import { sendEmail } from "../utils/sendEmail";
 import { generateEmail } from "../utils/generateEmailTemplate";
@@ -138,17 +139,17 @@ export const register = async (req: Request, res: Response) => {
     const inviteRole = (inviteDoc.role || payload.role || "member").toLowerCase().trim();
     if (inviteRole === "admin") {
       payload.role = "admin";
-      payload.clubRole = "executive";
+      payload.clubRole = "member";
       payload.applicationStatus = "approved";
-      if (!payload.designation || payload.designation === "General Member") {
-        payload.designation = "Administrator";
+      if (!payload.designation) {
+        payload.designation = "General Member";
       }
     } else if (inviteRole === "moderator") {
       payload.role = "moderator";
-      payload.clubRole = "executive";
+      payload.clubRole = "member";
       payload.applicationStatus = "approved";
-      if (!payload.designation || payload.designation === "General Member") {
-        payload.designation = "Club Moderator";
+      if (!payload.designation) {
+        payload.designation = "General Member";
       }
     } else if (inviteRole === "executive") {
       payload.role = "executive";
@@ -625,8 +626,15 @@ export const resetPassword = async (req: Request, res: Response) => {
 export const changePassword = async (req: Request, res: Response) => {
   try {
     const { id, oldPassword, newPassword } = req.body;
-    await userService.changePassword(id, oldPassword, newPassword);
-    res.status(200).json({ success: true, message: "Password updated" });
+    const targetUserId = (req as any).user?.id || id;
+    if (!targetUserId) {
+      return res.status(400).json({ success: false, message: "User ID is required." });
+    }
+    if ((req as any).user && (req as any).user.role !== "admin" && (req as any).user.id !== targetUserId) {
+      return res.status(403).json({ success: false, message: "Forbidden. You can only change your own password." });
+    }
+    await userService.changePassword(targetUserId, oldPassword, newPassword);
+    res.status(200).json({ success: true, message: "Password updated successfully." });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
   }
@@ -640,7 +648,29 @@ export const getProfile = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Bad request. Identifier is required." });
     }
 
-    const user = await userService.getPublicUserProfile(identifier);
+    // Check if caller has an authorization token or cookie with admin/staff privileges or is self
+    let requestingUser: any = null;
+    const token = req.cookies?.accessToken || req.headers.authorization?.split(" ")[1];
+    if (token) {
+      try {
+        requestingUser = jwt.verify(token, process.env.JWT_SECRET || "default_secret");
+      } catch {}
+    }
+
+    const isElevated =
+      requestingUser &&
+      ["admin", "moderator", "executive", "advisor"].includes(requestingUser.role);
+
+    let user;
+    if (isElevated) {
+      user = await userService.getUserProfile(identifier);
+    } else {
+      user = await userService.getPublicUserProfile(identifier);
+      if (requestingUser && user && String((user as any)._id) === String(requestingUser.id)) {
+        user = await userService.getUserProfile(identifier);
+      }
+    }
+
     res.status(200).json({ success: true, message: "User found", data: user });
   } catch (err: any) {
     const msg: string = err?.message || "An error occurred.";
@@ -658,6 +688,20 @@ export const getProfile = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Bad request. Please check your input." });
     }
     return res.status(500).json({ success: false, message: "Internal server error. Please try again later." });
+  }
+};
+
+export const getAdminMemberDetails = async (req: Request, res: Response) => {
+  try {
+    const identifier = req.params.identifier;
+    if (!identifier || identifier.trim() === "") {
+      return res.status(400).json({ success: false, message: "Bad request. Identifier is required." });
+    }
+
+    const user = await userService.getUserProfile(identifier);
+    res.status(200).json({ success: true, message: "Member details retrieved", data: user });
+  } catch (err: any) {
+    res.status(404).json({ success: false, message: err?.message || "Member not found." });
   }
 };
 
@@ -906,21 +950,21 @@ export const updateUserImage = async (req: Request, res: Response, next: NextFun
       return res.status(500).json({ success: false, message: "Image upload failed" });
     }
 
-    // Attempt to delete old photo if exists (safe / non-blocking)
+    // Move old photo to trash_to_delete folder in Cloudinary
     if (user.imagePublicId) {
       try {
-        await deleteFromCloudinary(user.imagePublicId);
+        await moveToTrashInCloudinary(user.imagePublicId);
       } catch (err) {
-        console.warn("Could not delete old image from Cloudinary:", err);
+        console.warn("Could not move old image to trash_to_delete in Cloudinary:", err);
       }
     } else if (user.imageUrl) {
       try {
         const match = user.imageUrl.match(/uploads\/[^.]+/);
         if (match) {
-          await deleteFromCloudinary(match[0]);
+          await moveToTrashInCloudinary(match[0]);
         }
       } catch (err) {
-        console.warn("Could not delete old image from Cloudinary by URL:", err);
+        console.warn("Could not move old image to trash_to_delete in Cloudinary by URL:", err);
       }
     }
 
@@ -990,21 +1034,21 @@ export const updateUserCover = async (req: Request, res: Response, next: NextFun
       return res.status(500).json({ success: false, message: "Cover upload failed" });
     }
 
-    // Attempt to delete old cover if exists (safe / non-blocking)
+    // Move old cover to trash_to_delete folder in Cloudinary
     if (user.coverPublicId) {
       try {
-        await deleteFromCloudinary(user.coverPublicId);
+        await moveToTrashInCloudinary(user.coverPublicId);
       } catch (err) {
-        console.warn("Could not delete old cover from Cloudinary:", err);
+        console.warn("Could not move old cover to trash_to_delete in Cloudinary:", err);
       }
     } else if (user.coverUrl) {
       try {
         const match = user.coverUrl.match(/uploads\/[^.]+/);
         if (match) {
-          await deleteFromCloudinary(match[0]);
+          await moveToTrashInCloudinary(match[0]);
         }
       } catch (err) {
-        console.warn("Could not delete old cover from Cloudinary by URL:", err);
+        console.warn("Could not move old cover to trash_to_delete in Cloudinary by URL:", err);
       }
     }
 
@@ -1105,21 +1149,49 @@ export const updateUserRole = async (req: Request, res: Response, next: NextFunc
     if (department !== undefined) updateData.department = department;
     if (session !== undefined) updateData.session = session;
     if (batch !== undefined) updateData.batch = batch;
-    if (isGraduated !== undefined) updateData.isGraduated = Boolean(isGraduated);
+    // Resolve cross-field role and graduation consistency
+    const targetClubRole = clubRole !== undefined ? clubRole : (role === "member" && existingUser.clubRole === "alumni" ? "member" : undefined);
+    const targetRole = role !== undefined ? role : (clubRole === "member" && existingUser.role === "alumni" ? "member" : undefined);
+
+    if (targetRole !== undefined) updateData.role = targetRole;
+    if (targetClubRole !== undefined) updateData.clubRole = targetClubRole;
+
+    if (isGraduated !== undefined) {
+      updateData.isGraduated = Boolean(isGraduated);
+      if (!updateData.isGraduated) {
+        updateData.passingYear = null;
+        if (updateData.clubRole === "alumni" || (!clubRole && existingUser.clubRole === "alumni")) {
+          updateData.clubRole = "member";
+        }
+        if (updateData.role === "alumni" || (!role && existingUser.role === "alumni")) {
+          updateData.role = "member";
+        }
+      }
+    } else {
+      // Auto-infer graduation status if not explicitly passed
+      if (updateData.clubRole === "member" || (targetRole === "member" && (existingUser.clubRole === "alumni" || existingUser.isGraduated))) {
+        updateData.isGraduated = false;
+        updateData.passingYear = null;
+        if (!updateData.clubRole) updateData.clubRole = "member";
+      } else if (updateData.clubRole === "alumni" || updateData.role === "alumni") {
+        updateData.isGraduated = true;
+      }
+    }
+
     if (passingYear !== undefined) {
       updateData.passingYear = passingYear ? Number(passingYear) : null;
     }
-    if (role !== undefined) updateData.role = role;
-    if (clubRole !== undefined) updateData.clubRole = clubRole;
+
     if (designation !== undefined) {
       updateData.designation = designation.trim();
       // Auto-sync clubRole if clubRole was not explicitly specified in the update
-      if (clubRole === undefined) {
+      if (clubRole === undefined && targetClubRole === undefined) {
         const dLower = designation.toLowerCase().trim();
         if (dLower.includes("advisor") || dLower.includes("patron")) {
           updateData.clubRole = "advisor";
         } else if (dLower === "" || dLower === "general member" || dLower === "member" || dLower === "club member") {
-          updateData.clubRole = (isGraduated !== undefined ? isGraduated : existingUser.isGraduated) ? "alumni" : "member";
+          const effectiveIsGraduated = updateData.isGraduated !== undefined ? updateData.isGraduated : existingUser.isGraduated;
+          updateData.clubRole = effectiveIsGraduated ? "alumni" : "member";
         } else {
           updateData.clubRole = "executive";
         }
@@ -1127,6 +1199,11 @@ export const updateUserRole = async (req: Request, res: Response, next: NextFunc
     } else if (customRole !== undefined) {
       // Backward-compatible fallback if an older payload passes customRole
       updateData.designation = customRole.trim();
+    }
+
+    // If reverting an alumni to member and designation still has "alumni", reset to "General Member"
+    if (updateData.clubRole === "member" && designation === undefined && (!existingUser.designation || existingUser.designation.toLowerCase().includes("alumni"))) {
+      updateData.designation = "General Member";
     }
     if (applicationStatus !== undefined) updateData.applicationStatus = applicationStatus;
     if (profileStatus !== undefined) updateData.profileStatus = profileStatus;
@@ -1172,11 +1249,28 @@ export const updateUserRole = async (req: Request, res: Response, next: NextFunc
 
 export const getPublicMembers = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const members = await User.find({
+    const rawQuery = (req.query.search || req.query.q || "").toString().trim();
+    const filter: any = {
       applicationStatus: "approved",
-    })
+      profileStatus: { $ne: "banned" },
+    };
+
+    if (rawQuery) {
+      const escaped = rawQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escaped, "i");
+      filter.$or = [
+        { fullName: regex },
+        { email: regex },
+        { studentId: regex },
+        { department: regex },
+        { designation: regex },
+        { customRole: regex },
+      ];
+    }
+
+    const members = await User.find(filter)
       .select(
-        "_id fullName imageUrl imagePosition role clubRole customRole designation session batch department socialLinks bio isGraduated passingYear"
+        "_id fullName email imageUrl imagePosition role clubRole customRole designation session batch department socialLinks bio isGraduated passingYear studentId"
       )
       .lean();
 
@@ -1194,10 +1288,10 @@ export const searchAssignableMembers = async (req: Request, res: Response, next:
     const rawQuery = (req.query.q || req.query.search || "").toString().trim();
     const category = (req.query.category || "").toString().trim().toLowerCase();
 
-    if (!rawQuery || rawQuery.length < 3) {
+    if (!rawQuery || rawQuery.length < 1) {
       return res.status(200).json({
         success: true,
-        message: "Search query must be at least 3 characters",
+        message: "Search query is required",
         members: [],
         data: [],
       });
@@ -1215,6 +1309,7 @@ export const searchAssignableMembers = async (req: Request, res: Response, next:
         { studentId: regex },
         { department: regex },
         { designation: regex },
+        { customRole: regex },
       ],
     };
 
@@ -1251,15 +1346,17 @@ export const searchAssignableMembers = async (req: Request, res: Response, next:
 
 export const adminCreateMember = async (req: Request, res: Response) => {
   try {
-    if (!req.body.data) {
-      return res.status(400).json({ success: false, message: "Missing member data" });
-    }
-
     let payload: any;
-    try {
-      payload = JSON.parse(req.body.data);
-    } catch {
-      return res.status(400).json({ success: false, message: "Invalid JSON format" });
+    if (req.body.data) {
+      try {
+        payload = JSON.parse(req.body.data);
+      } catch {
+        return res.status(400).json({ success: false, message: "Invalid JSON format" });
+      }
+    } else if (req.body && typeof req.body === "object" && (req.body.fullName || req.body.email)) {
+      payload = { ...req.body };
+    } else {
+      return res.status(400).json({ success: false, message: "Missing member data" });
     }
 
     if (!payload.fullName || !payload.email) {
@@ -1406,13 +1503,13 @@ export const getMemberActivityLookup = async (req: Request, res: Response, next:
     }
 
     let user = await User.findOne(userQuery)
-      .select("-password -verificationToken -verificationCode -passwordResetToken -passwordResetCode")
+      .select("-password -verificationToken -verificationCode -passwordResetToken -passwordResetCode -role -security -contactNumber")
       .lean();
 
     // Fallback: partial search by fullName if clean query has at least 3 characters
     if (!user && clean.length >= 3) {
       user = await User.findOne({ fullName: { $regex: clean, $options: "i" } })
-        .select("-password -verificationToken -verificationCode -passwordResetToken -passwordResetCode")
+        .select("-password -verificationToken -verificationCode -passwordResetToken -passwordResetCode -role -security -contactNumber")
         .lean();
     }
 
@@ -1485,7 +1582,6 @@ export const getMemberActivityLookup = async (req: Request, res: Response, next:
           session: user.session,
           isGraduated: user.isGraduated,
           passingYear: user.passingYear,
-          role: user.role,
           clubRole: user.clubRole || "member",
           designation: user.designation,
           imageUrl: user.imageUrl,
@@ -1545,7 +1641,7 @@ export const getLeaderboard = async (req: Request, res: Response, next: NextFunc
       applicationStatus: "approved",
       clubRole: { $ne: "advisor" },
     })
-      .select("_id fullName imageUrl role clubRole customRole designation socialLinks studentId batch department session")
+      .select("_id fullName imageUrl clubRole customRole designation socialLinks studentId batch department session")
       .lean();
 
     // Exclude any advisor, patron, or faculty accounts from the competitive programming leaderboard

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
+import crypto from "crypto";
 import FormModel from "../models/Form.model";
 import FormSubmissionModel from "../models/FormSubmission.model";
 import { Event } from "../models/Event.model";
@@ -7,6 +8,23 @@ import AppError from "../utils/AppError";
 import { ApiFeatures } from "../utils/apiFeatures";
 import { buildHateoas } from "../utils/hateoas";
 import { deleteFromCloudinary } from "../services/upload.service";
+
+/**
+ * Generate a unique 6-character random alphanumeric code
+ */
+export const generateUniqueFormCode = async (length = 6): Promise<string> => {
+  const chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz";
+  for (let attempt = 0; attempt < 10; attempt++) {
+    let code = "";
+    const bytes = crypto.randomBytes(length);
+    for (let i = 0; i < length; i++) {
+      code += chars[bytes[i] % chars.length];
+    }
+    const exists = await FormModel.exists({ code });
+    if (!exists) return code;
+  }
+  return crypto.randomBytes(3).toString("hex");
+};
 
 function extractCloudinaryPublicId(urlOrId: string): string | null {
   if (!urlOrId || typeof urlOrId !== "string") return null;
@@ -49,7 +67,10 @@ export const createForm = async (req: Request, res: Response, next: NextFunction
         ? eventId
         : null;
 
+    const code = await generateUniqueFormCode();
+
     const form = await FormModel.create({
+      code,
       title,
       eventId: validEventId,
       description: description || "",
@@ -78,6 +99,14 @@ export const createForm = async (req: Request, res: Response, next: NextFunction
 export const getAllForms = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const forms = await FormModel.find().sort({ createdAt: -1 });
+
+    // Backfill 6-char codes for forms that don't have one yet
+    for (const f of forms) {
+      if (!f.code) {
+        f.code = await generateUniqueFormCode();
+        await f.save();
+      }
+    }
 
     res.json({
       success: true,
@@ -127,10 +156,20 @@ export const getFormsByEvent = async (req: Request, res: Response, next: NextFun
  */
 export const getFormById = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const form = await FormModel.findById(req.params.id);
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const query = isObjectId
+      ? { $or: [{ _id: req.params.id }, { code: req.params.id }] }
+      : { code: req.params.id };
+
+    const form = await FormModel.findOne(query);
 
     if (!form) {
       return next(new AppError("Form not found", 404));
+    }
+
+    if (!form.code) {
+      form.code = await generateUniqueFormCode();
+      await form.save();
     }
 
     res.json({
@@ -147,8 +186,13 @@ export const getFormById = async (req: Request, res: Response, next: NextFunctio
  */
 export const disableForm = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const form = await FormModel.findByIdAndUpdate(
-      req.params.id,
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const query = isObjectId
+      ? { $or: [{ _id: req.params.id }, { code: req.params.id }] }
+      : { code: req.params.id };
+
+    const form = await FormModel.findOneAndUpdate(
+      query,
       { isActive: false },
       { new: true }
     );
@@ -171,7 +215,12 @@ export const disableForm = async (req: Request, res: Response, next: NextFunctio
  */
 export const deleteForm = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const form = await FormModel.findById(req.params.id);
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const query = isObjectId
+      ? { $or: [{ _id: req.params.id }, { code: req.params.id }] }
+      : { code: req.params.id };
+
+    const form = await FormModel.findOne(query);
 
     if (!form) {
       return next(new AppError("Form not found", 404));
@@ -245,7 +294,12 @@ export const updateForm = async (req: Request, res: Response, next: NextFunction
   try {
     const { title, eventId, description, startDate, endDate, fields, coverImageUrl, allowMultipleSubmissions, isActive } = req.body;
 
-    const existingForm = await FormModel.findById(req.params.id);
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const query = isObjectId
+      ? { $or: [{ _id: req.params.id }, { code: req.params.id }] }
+      : { code: req.params.id };
+
+    const existingForm = await FormModel.findOne(query);
     if (!existingForm) {
       return next(new AppError("Form not found", 404));
     }

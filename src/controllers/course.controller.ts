@@ -440,10 +440,10 @@ export const getAllCourses = async (req: Request, res: Response, next: NextFunct
       if (!cleanSessions.includes("2021-22")) cleanSessions.unshift("2021-22");
       if (!cleanSessions.includes(targetSession)) cleanSessions.push(targetSession);
 
-      const approvedCount = effectiveCourses.filter(
-        (c) => c.status === "approved" && !c.isDiscontinued && !c.isReplaced
-      ).length;
-      const pendingCount = effectiveCourses.filter((c) => c.status === "pending").length;
+      const [allPendingCount, allApprovedCount] = await Promise.all([
+        Course.countDocuments({ status: "pending" }),
+        Course.countDocuments({ status: "approved" }),
+      ]);
 
       return res.status(200).json({
         status: "success",
@@ -456,9 +456,9 @@ export const getAllCourses = async (req: Request, res: Response, next: NextFunct
           totalPages: 1,
         },
         counts: {
-          pending: pendingCount,
-          approved: approvedCount,
-          total: effectiveCourses.length,
+          pending: allPendingCount,
+          approved: allApprovedCount,
+          total: allPendingCount + allApprovedCount,
         },
       });
     }
@@ -501,8 +501,8 @@ export const getAllCourses = async (req: Request, res: Response, next: NextFunct
         .limit(limitNum)
         .lean(),
       Course.countDocuments(filter),
-      Course.countDocuments({ ...deptFilter, status: "pending" }),
-      Course.countDocuments({ ...deptFilter, status: "approved" }),
+      Course.countDocuments({ status: "pending" }),
+      Course.countDocuments({ status: "approved" }),
       Course.distinct("session", deptFilter),
     ]);
 

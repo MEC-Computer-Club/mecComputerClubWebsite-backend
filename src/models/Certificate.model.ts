@@ -12,7 +12,7 @@ export interface ICertificate extends Document {
   issueDate: Date;
   certificateId: string;
   digitalUrl?: string;
-  type: "participation" | "winner" | "completion" | "achievement" | "appreciation" | "other";
+  type: "participation" | "winner" | "completion" | "achievement" | "appreciation" | "volunteer" | "organizer" | "other";
   position?: string; // for winner certificates: "1st Place", "Champion", etc.
   issuedBy?: mongoose.Types.ObjectId; // admin who issued it
   template?: mongoose.Types.ObjectId;
@@ -36,7 +36,7 @@ const CertificateSchema: Schema = new Schema(
     digitalUrl: { type: String, default: "" },
     type: {
       type: String,
-      enum: ["participation", "winner", "completion", "achievement", "appreciation", "other"],
+      enum: ["participation", "winner", "completion", "achievement", "appreciation", "volunteer", "organizer", "other"],
       default: "participation",
     },
     position: { type: String, trim: true },

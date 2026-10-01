@@ -14,6 +14,6 @@ router.get("/:id", optionalAuthMiddleware, getSponsorById);
 router.post("/", authMiddleware(["admin", "moderator"]), upload.single("logo"), createSponsor);
 router.patch("/:id", authMiddleware(["admin", "moderator"]), upload.single("logo"), updateSponsor);
 router.post("/:id/sponsorships", authMiddleware(["admin", "moderator"]), addSponsorshipRecord);
-router.delete("/:id", authMiddleware(["admin", "moderator"]), deleteSponsor);
+router.delete("/:id", authMiddleware(["admin"]), deleteSponsor);
 
 export default router;

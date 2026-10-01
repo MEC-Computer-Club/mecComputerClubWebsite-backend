@@ -4,6 +4,7 @@ import * as EventService from "../services/event.service";
 import { Event } from "../models/Event.model";
 import User from "../models/User.model";
 import FormModel from "../models/Form.model";
+import FormSubmissionModel from "../models/FormSubmission.model";
 import { Certificate } from "../models/Certificate.model";
 import { Media } from "../models/Media.model";
 import { uploadToCloudinary, deleteFromCloudinary } from "../services/upload.service";
@@ -26,19 +27,23 @@ export const handleCreateEvent = async (req: Request, res: Response) => {
       await FormModel.findByIdAndUpdate(event.linkedForm, { eventId: event._id });
     }
 
-    // Broadcast in-app notification about new event (executives & current members only, excluding alumni/advisors)
-    createBroadcastNotification({
-      recipientRole: "current_members",
-      type: "event",
-      title: `New Event: ${event.title}`,
-      message: event.description
-        ? `${event.description.slice(0, 100)}...`
-        : `MEC Computer Club has published a new event: ${event.title}`,
-      link: `/events/${event.slug || event._id}`,
-      actionLabel: "View Event",
-      priority: "normal",
-      metadata: { eventId: event._id },
-    }).catch((err) => console.error("Event notification error:", err));
+    // Broadcast in-app notification about new event ONLY if published (executives & current members only, excluding alumni/advisors)
+    if (event.isPublished) {
+      createBroadcastNotification({
+        recipientRole: "current_members",
+        type: "event",
+        title: `New Event: ${event.title}`,
+        message: event.description
+          ? `${event.description.slice(0, 100)}...`
+          : `MEC Computer Club has published a new event: ${event.title}`,
+        link: `/events/${event.slug || event._id}`,
+        actionLabel: "View Event",
+        priority: "normal",
+        metadata: { eventId: event._id },
+      }).catch((err) => console.error("Event notification error:", err));
+
+      await Event.findByIdAndUpdate(event._id, { notificationSent: true });
+    }
 
     res.status(201).json({ success: true, data: event });
   } catch (error: any) {
@@ -54,7 +59,78 @@ export const handleGetEvents = async (req: Request, res: Response) => {
     if (status) filter.status = status;
     const sortOption = sort === "asc" ? { date: 1 } : { date: -1 };
     const events = await EventService.getAllEvents(filter, sortOption);
-    res.status(200).json({ success: true, count: events.length, data: events });
+
+    // Collect event IDs and form IDs
+    const eventIds = events.map((e) => e._id);
+    const formIdToEventMap: Record<string, string> = {};
+    const allFormIdSet = new Set<string>();
+
+    for (const ev of events) {
+      const evIdStr = ev._id.toString();
+      // 1. linkedForm
+      const formRef: any = ev.linkedForm;
+      const formIdStr = formRef?._id ? formRef._id.toString() : formRef?.toString();
+      if (formIdStr && mongoose.Types.ObjectId.isValid(formIdStr)) {
+        allFormIdSet.add(formIdStr);
+        formIdToEventMap[formIdStr] = evIdStr;
+      }
+      // 2. forms array
+      if (Array.isArray(ev.forms)) {
+        for (const f of ev.forms) {
+          const fid = f?._id ? f._id.toString() : f?.toString();
+          if (fid && mongoose.Types.ObjectId.isValid(fid)) {
+            allFormIdSet.add(fid);
+            formIdToEventMap[fid] = evIdStr;
+          }
+        }
+      }
+    }
+
+    // 3. Also check forms that have eventId matching any of our events
+    const matchingForms = await FormModel.find({ eventId: { $in: eventIds } }).select("_id eventId").lean();
+    for (const mf of matchingForms) {
+      const fid = mf._id.toString();
+      const eid = mf.eventId ? mf.eventId.toString() : "";
+      if (eid) {
+        allFormIdSet.add(fid);
+        formIdToEventMap[fid] = eid;
+      }
+    }
+
+    const formSubmissionCounts: Record<string, number> = {};
+    if (allFormIdSet.size > 0) {
+      const formObjectIds = Array.from(allFormIdSet).map((id) => new mongoose.Types.ObjectId(id));
+      const submissionCounts = await FormSubmissionModel.aggregate([
+        { $match: { formId: { $in: formObjectIds } } },
+        { $group: { _id: "$formId", count: { $sum: 1 } } },
+      ]);
+      for (const item of submissionCounts) {
+        formSubmissionCounts[item._id.toString()] = item.count;
+      }
+    }
+
+    const eventsWithCount = events.map((eventDoc: any) => {
+      const ev = eventDoc.toObject ? eventDoc.toObject() : { ...eventDoc };
+      const evIdStr = ev._id.toString();
+
+      // Sum all submissions for any forms associated with this event
+      let totalFormSubs = 0;
+      for (const [fid, eid] of Object.entries(formIdToEventMap)) {
+        if (eid === evIdStr) {
+          totalFormSubs += formSubmissionCounts[fid] || 0;
+        }
+      }
+
+      const approvedCount = Array.isArray(ev.approvedParticipants) ? ev.approvedParticipants.length : 0;
+      const pendingCount = Array.isArray(ev.pendingParticipants) ? ev.pendingParticipants.length : 0;
+      const attendeesCount = Array.isArray(ev.attendees) ? ev.attendees.length : 0;
+
+      const directCount = approvedCount + pendingCount;
+      ev.registeredCount = totalFormSubs > 0 ? totalFormSubs : (directCount > 0 ? directCount : attendeesCount);
+      return ev;
+    });
+
+    res.status(200).json({ success: true, count: eventsWithCount.length, data: eventsWithCount });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -134,6 +210,11 @@ export const handleGetEventById = async (req: Request, res: Response) => {
         path: "eventSponsors.sponsorId",
         select: "name logoUrl website",
         options: { strictPopulate: false },
+      })
+      .populate({
+        path: "contributors.userId",
+        select: "fullName email imageUrl studentId department batch",
+        options: { strictPopulate: false },
       });
 
     if (!event) return res.status(404).json({ success: false, message: "Event not found" });
@@ -152,6 +233,37 @@ export const handleGetEventById = async (req: Request, res: Response) => {
     data.rewards = data.rewards || [];
     data.schedule = data.schedule || [];
     data.rules = data.rules || [];
+
+    // Calculate registeredCount from linked form submissions or participants
+    let formSubs = 0;
+    const associatedFormIds = new Set<string>();
+    const formRef: any = event.linkedForm;
+    const formIdStr = formRef?._id ? formRef._id.toString() : formRef?.toString();
+    if (formIdStr && mongoose.Types.ObjectId.isValid(formIdStr)) {
+      associatedFormIds.add(formIdStr);
+    }
+    if (Array.isArray(event.forms)) {
+      for (const f of event.forms) {
+        const fid = f?._id ? f._id.toString() : f?.toString();
+        if (fid && mongoose.Types.ObjectId.isValid(fid)) associatedFormIds.add(fid);
+      }
+    }
+    const formsWithEventId = await FormModel.find({ eventId: event._id }).select("_id").lean();
+    for (const mf of formsWithEventId) {
+      associatedFormIds.add(mf._id.toString());
+    }
+
+    if (associatedFormIds.size > 0) {
+      formSubs = await FormSubmissionModel.countDocuments({
+        formId: { $in: Array.from(associatedFormIds).map((id) => new mongoose.Types.ObjectId(id)) },
+      });
+    }
+
+    const approvedCount = Array.isArray(data.approvedParticipants) ? data.approvedParticipants.length : 0;
+    const pendingCount = Array.isArray(data.pendingParticipants) ? data.pendingParticipants.length : 0;
+    const attendeesCount = Array.isArray(data.attendees) ? data.attendees.length : 0;
+    const directCount = approvedCount + pendingCount;
+    data.registeredCount = formSubs > 0 ? formSubs : (directCount > 0 ? directCount : attendeesCount);
 
     res.status(200).json({ success: true, data });
   } catch (error: any) {
@@ -200,6 +312,30 @@ export const handleUpdateEvent = async (req: Request, res: Response) => {
     if (newFormId && oldFormId !== newFormId) {
       // Link new form to this event
       await FormModel.findByIdAndUpdate(newFormId, { eventId: updatedEvent._id });
+    }
+
+    // Broadcast notification ONLY if an unpublished draft is being published for the very first time.
+    // NEVER dispatch notifications for status changes (e.g. upcoming -> completed) or editing already-published events.
+    const wasPublished = Boolean(existingEvent.isPublished);
+    const isNowPublished = Boolean(updatedEvent.isPublished);
+    const alreadyNotified = Boolean(existingEvent.notificationSent);
+    const isFirstTimePublishing = !wasPublished && isNowPublished && !alreadyNotified && req.body.isPublished === true;
+
+    if (isFirstTimePublishing) {
+      createBroadcastNotification({
+        recipientRole: "current_members",
+        type: "event",
+        title: `New Event: ${updatedEvent.title}`,
+        message: updatedEvent.description
+          ? `${updatedEvent.description.slice(0, 100)}...`
+          : `MEC Computer Club has published a new event: ${updatedEvent.title}`,
+        link: `/events/${updatedEvent.slug || updatedEvent._id}`,
+        actionLabel: "View Event",
+        priority: "normal",
+        metadata: { eventId: updatedEvent._id },
+      }).catch((err) => console.error("Event update notification error:", err));
+
+      await Event.findByIdAndUpdate(updatedEvent._id, { notificationSent: true });
     }
 
     res.status(200).json({ success: true, data: updatedEvent });
@@ -449,121 +585,17 @@ export const approveParticipant = async (req: Request, res: Response, next: Next
 
     await event.save();
 
-    // Resolve recipient details for email confirmation
-    let recipientEmail = participant.leaderEmail;
-    let recipientName = participant.leaderName || participant.teamName;
-
-    if (!recipientEmail && participant.userId) {
-      const user = await User.findById(participant.userId);
-      if (user) {
-        recipientEmail = user.email;
-        recipientName = recipientName || user.fullName;
-      }
-    }
-
-    // Send confirmation email asynchronously
-    if (recipientEmail) {
-      try {
-        const formattedDate = new Date(event.date).toLocaleDateString("en-US", {
-          weekday: "long",
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        });
-
-        const emailHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8f8f6; color: #1a1a1a; margin: 0; padding: 24px; }
-    .card { max-width: 600px; margin: 0 auto; background: #ffffff; border: 2px solid #1a1a1a; border-radius: 12px; box-shadow: 6px 6px 0px #1a1a1a; overflow: hidden; }
-    .header { background: #0f766e; color: #ffffff; padding: 24px; text-align: center; }
-    .header h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
-    .badge { display: inline-block; background: #ffffff; color: #0f766e; font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 4px 10px; border-radius: 9999px; margin-bottom: 12px; }
-    .content { padding: 28px; }
-    .details { background: #f3f4f6; border-radius: 8px; border: 1px solid #e5e7eb; padding: 18px; margin: 20px 0; }
-    .details-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
-    .label { color: #6b7280; font-weight: 600; }
-    .val { color: #111827; font-weight: 700; }
-    .members-list { margin: 12px 0 0 0; padding-left: 20px; font-size: 13px; color: #374151; }
-    .footer { text-align: center; padding: 20px; font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="header">
-      <div class="badge">Official Registration Confirmation</div>
-      <h1>${event.title}</h1>
-    </div>
-    <div class="content">
-      <p style="font-size: 16px;">Hello <strong>${recipientName || "Participant"}</strong>,</p>
-      <p style="color: #374151; line-height: 1.6;">
-        Congratulations! Your registration for <strong>${event.title}</strong> has been officially approved by the MEC Computer Club administration.
-      </p>
-
-      ${participant.teamName ? `
-        <div style="background: #eef2ff; border-left: 4px solid #6366f1; padding: 12px 16px; border-radius: 4px; margin: 16px 0;">
-          <strong style="color: #3730a3; font-size: 14px;">Registered Team: ${participant.teamName}</strong>
-          ${participant.members && participant.members.length > 0 ? `
-            <ul class="members-list">
-              <li>Leader: ${participant.leaderName || recipientName} ${participant.inGameId ? `(UID: ${participant.inGameId})` : ""}</li>
-              ${participant.members.map((m: any) => `<li>${m.fullName} ${m.studentId ? `(${m.studentId})` : ""} ${m.inGameId ? `- UID: ${m.inGameId}` : ""}</li>`).join("")}
-            </ul>
-          ` : ""}
-        </div>
-      ` : ""}
-
-      <div class="details">
-        <div class="details-row">
-          <span class="label">Date:</span>
-          <span class="val">${formattedDate}</span>
-        </div>
-        ${event.eventTime ? `
-        <div class="details-row">
-          <span class="label">Time:</span>
-          <span class="val">${event.eventTime}</span>
-        </div>` : ""}
-        <div class="details-row">
-          <span class="label">Venue / Location:</span>
-          <span class="val">${event.location}</span>
-        </div>
-        ${event.prizePool ? `
-        <div class="details-row">
-          <span class="label">Prize Pool:</span>
-          <span class="val" style="color: #059669;">${event.prizePool}</span>
-        </div>` : ""}
-      </div>
-
-      <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">
-        Please make sure all participants arrive on time. For any queries, reach out to us at 
-        <a href="mailto:${event.contactEmail || "contact@meccomputerclub.org"}" style="color: #0f766e; font-weight: 600;">${event.contactEmail || "contact@meccomputerclub.org"}</a>.
-      </p>
-    </div>
-    <div class="footer">
-      &copy; ${new Date().getFullYear()} MEC Computer Club &bull; Mymensingh Engineering College
-    </div>
-  </div>
-</body>
-</html>
-        `;
-
-        await sendEmail(recipientEmail, `Registration Confirmed: ${event.title} - MEC-CC`, emailHtml);
-      } catch (mailErr) {
-        console.error("Failed to send approval email (non-fatal):", mailErr);
-      }
-    }
+    const recipientName = participant.leaderName || participant.teamName;
 
     res.status(200).json({
       success: true,
-      message: `Registration approved for ${recipientName || "participant"}. Confirmation email dispatched.`,
+      message: `Registration approved for ${recipientName || "participant"}. Notification dispatched.`,
     });
   } catch (error) { next(error); }
 };
 
 /**
- * @desc  Reject a pending participant
+ * @desc  Reject a participant (pending or previously approved)
  * @route PATCH /api/events/:id/participants/:userId/reject
  */
 export const rejectParticipant = async (req: Request, res: Response, next: NextFunction) => {
@@ -573,9 +605,24 @@ export const rejectParticipant = async (req: Request, res: Response, next: NextF
     const event = await Event.findById(eventId);
     if (!event) return res.status(404).json({ success: false, message: "Event not found" });
 
-    event.pendingParticipants = event.pendingParticipants.filter(
+    // Remove from pendingParticipants
+    event.pendingParticipants = (event.pendingParticipants || []).filter(
       (p: any) => p._id?.toString() !== targetId && p.userId?.toString() !== targetId
     ) as any;
+
+    // Remove from approvedParticipants if previously approved
+    event.approvedParticipants = (event.approvedParticipants || []).filter(
+      (p: any) => p._id?.toString() !== targetId && p.userId?.toString() !== targetId
+    ) as any;
+
+    // Remove from attendees and user activity if linked
+    event.attendees = (event.attendees || []).filter(
+      (a: any) => a.toString() !== targetId
+    ) as any;
+    await User.findByIdAndUpdate(targetId, {
+      $pull: { eventsAttended: event._id },
+    });
+
     await event.save();
 
     res.status(200).json({ success: true, message: "Participant registration rejected." });
@@ -688,6 +735,35 @@ export const setWinners = async (req: Request, res: Response, next: NextFunction
     if (!event) return res.status(404).json({ success: false, message: "Event not found" });
 
     res.status(200).json({ success: true, data: event.winners });
+  } catch (error) { next(error); }
+};
+
+// ── Contributors (Organizers & Volunteers) ───────────────────────────────────
+
+/**
+ * @desc  Set/update organizing team and volunteers for an event
+ * @route PUT /api/events/:id/contributors
+ */
+export const setContributors = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { contributors } = req.body;
+    if (!Array.isArray(contributors)) {
+      return res.status(400).json({ success: false, message: "contributors array is required" });
+    }
+
+    const event = await Event.findByIdAndUpdate(
+      req.params.id,
+      { $set: { contributors } },
+      { new: true }
+    ).populate({
+      path: "contributors.userId",
+      select: "fullName email imageUrl studentId department batch",
+      options: { strictPopulate: false },
+    });
+
+    if (!event) return res.status(404).json({ success: false, message: "Event not found" });
+
+    res.status(200).json({ success: true, data: event.contributors });
   } catch (error) { next(error); }
 };
 
@@ -1205,3 +1281,601 @@ export const rejectParticipationClaim = async (req: Request, res: Response, next
     next(error);
   }
 };
+
+// ── Form Submissions & Bulk Approval for Events ─────────────────────────────
+
+const extractApplicantDetails = (responses: Record<string, any> = {}) => {
+  const email =
+    responses?.contact_email_address ||
+    responses?.email_address ||
+    responses?.email ||
+    responses?.contact_email ||
+    responses?.user_email ||
+    "";
+  const fullName =
+    responses?.full_name ||
+    responses?.fullName ||
+    responses?.name ||
+    responses?.applicant_name ||
+    responses?.leader_name ||
+    responses?.captain_name ||
+    "Participant";
+  const studentId =
+    responses?.student_id ||
+    responses?.studentId ||
+    responses?.id_number ||
+    responses?.id ||
+    "";
+  const department =
+    responses?.department ||
+    responses?.dept ||
+    "";
+  const batch =
+    responses?.batch ||
+    responses?.session ||
+    "";
+  const phone =
+    responses?.contact_phone ||
+    responses?.phone_number ||
+    responses?.phone ||
+    responses?.mobile ||
+    "";
+  const teamName =
+    responses?.team_name ||
+    responses?.teamName ||
+    responses?.squad_name ||
+    undefined;
+
+  return {
+    email: String(email || "").trim(),
+    fullName: String(fullName || "").trim(),
+    studentId: String(studentId || "").trim(),
+    department: String(department || "").trim(),
+    batch: String(batch || "").trim(),
+    phone: String(phone || "").trim(),
+    teamName: teamName ? String(teamName).trim() : undefined,
+  };
+};
+
+/**
+ * @desc Get all form submissions linked to an event with user account matching
+ * @route GET /api/events/:id/form-submissions
+ */
+export const getEventFormSubmissions = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id: eventId } = req.params;
+    const event = await Event.findById(eventId).lean();
+    if (!event) return res.status(404).json({ success: false, message: "Event not found" });
+
+    // Collect linked form IDs
+    const formIdSet = new Set<string>();
+    if (event.linkedForm) formIdSet.add(event.linkedForm.toString());
+    if (Array.isArray(event.forms)) {
+      event.forms.forEach((f: any) => formIdSet.add(f.toString()));
+    }
+    const formsByEvent = await FormModel.find({ eventId: event._id }).select("_id title code fields").lean();
+    formsByEvent.forEach((f: any) => formIdSet.add(f._id.toString()));
+
+    const formIds = Array.from(formIdSet).map((id) => new mongoose.Types.ObjectId(id));
+    const forms = await FormModel.find({ _id: { $in: formIds } }).lean();
+
+    if (formIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        forms: [],
+        submissions: [],
+        stats: { total: 0, pending: 0, approved: 0, rejected: 0 },
+      });
+    }
+
+    const rawSubmissions = await FormSubmissionModel.find({ formId: { $in: formIds } })
+      .populate("userId", "fullName email studentId department imageUrl role")
+      .populate("reviewedBy", "fullName email")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Collect all emails to batch-lookup website user accounts
+    const allEmails = new Set<string>();
+    rawSubmissions.forEach((sub: any) => {
+      const details = extractApplicantDetails(sub.responses);
+      if (details.email) allEmails.add(details.email.toLowerCase());
+      if (sub.userId?.email) allEmails.add(sub.userId.email.toLowerCase());
+    });
+
+    const matchingUsers = await User.find({
+      email: { $in: Array.from(allEmails) },
+    })
+      .select("fullName email studentId department imageUrl role eventsAttended")
+      .lean();
+
+    const userByEmail = new Map<string, any>();
+    matchingUsers.forEach((u: any) => {
+      userByEmail.set(u.email.toLowerCase(), u);
+    });
+
+    // Check who is already in event.approvedParticipants or event.attendees
+    const approvedParticipantEmails = new Set(
+      (event.approvedParticipants || []).map((p: any) => (p.email || "").toLowerCase()).filter(Boolean)
+    );
+    const approvedAttendeeUserIds = new Set(
+      (event.attendees || []).map((a: any) => (a._id || a).toString())
+    );
+
+    let pendingCount = 0;
+    let approvedCount = 0;
+    let rejectedCount = 0;
+
+    const enrichedSubmissions = rawSubmissions.map((sub: any) => {
+      const details = extractApplicantDetails(sub.responses);
+      const user = (sub.userId as any)?._id
+        ? sub.userId
+        : userByEmail.get(details.email.toLowerCase()) || null;
+
+      // Determine effective status
+      let effectiveStatus = (sub as any).status || "pending";
+      const isAlreadyApproved =
+        approvedParticipantEmails.has(details.email.toLowerCase()) ||
+        (user?._id && approvedAttendeeUserIds.has(user._id.toString()));
+
+      if (effectiveStatus === "pending" && isAlreadyApproved) {
+        effectiveStatus = "approved";
+      }
+
+      if (effectiveStatus === "approved") approvedCount++;
+      else if (effectiveStatus === "rejected") rejectedCount++;
+      else pendingCount++;
+
+      return {
+        ...sub,
+        status: effectiveStatus,
+        applicantDetails: details,
+        matchedUser: user
+          ? {
+              _id: user._id,
+              fullName: user.fullName,
+              email: user.email,
+              studentId: user.studentId,
+              department: user.department,
+              imageUrl: user.imageUrl,
+              role: user.role,
+              hasAccount: true,
+            }
+          : null,
+        isAttending: isAlreadyApproved,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      forms,
+      submissions: enrichedSubmissions,
+      stats: {
+        total: enrichedSubmissions.length,
+        pending: pendingCount,
+        approved: approvedCount,
+        rejected: rejectedCount,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc Bulk approve form submissions & update participant profile activity
+ * @route POST /api/events/:id/form-submissions/bulk-approve
+ */
+export const bulkApproveFormSubmissions = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id: eventId } = req.params;
+    const { submissionIds, approveAll } = req.body;
+    const adminId = (req as any).user?._id || (req as any).user?.id;
+
+    const event = await Event.findById(eventId);
+    if (!event) return res.status(404).json({ success: false, message: "Event not found" });
+
+    // Collect linked form IDs
+    const formIdSet = new Set<string>();
+    if (event.linkedForm) formIdSet.add(event.linkedForm.toString());
+    if (Array.isArray(event.forms)) {
+      event.forms.forEach((f: any) => formIdSet.add(f.toString()));
+    }
+    const formsByEvent = await FormModel.find({ eventId: event._id }).select("_id").lean();
+    formsByEvent.forEach((f: any) => formIdSet.add(f._id.toString()));
+    const formIds = Array.from(formIdSet).map((id) => new mongoose.Types.ObjectId(id));
+
+    let query: any = { formId: { $in: formIds } };
+    if (!approveAll && Array.isArray(submissionIds) && submissionIds.length > 0) {
+      query._id = { $in: submissionIds.map((id: string) => new mongoose.Types.ObjectId(id)) };
+    }
+
+    const submissions = await FormSubmissionModel.find(query);
+    if (submissions.length === 0) {
+      return res.status(200).json({ success: true, message: "No submissions matched.", approvedCount: 0 });
+    }
+
+    let newlyApproved = 0;
+
+    for (const sub of submissions) {
+      sub.status = "approved";
+      sub.reviewedAt = new Date();
+      sub.reviewedBy = adminId;
+
+      const details = extractApplicantDetails(sub.responses);
+
+      // Look up website user by email or sub.userId
+      let user = null;
+      if (sub.userId) {
+        user = await User.findById(sub.userId);
+      }
+      if (!user && details.email) {
+        user = await User.findOne({
+          email: { $regex: new RegExp(`^${details.email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+        });
+      }
+
+      if (user) {
+        sub.userId = user._id as any;
+
+        // Add to event.attendees
+        if (!event.attendees.some((id: any) => id.toString() === user._id.toString())) {
+          event.attendees.push(user._id as any);
+        }
+
+        // Add event to User profile eventsAttended
+        await User.findByIdAndUpdate(user._id, {
+          $addToSet: { eventsAttended: event._id },
+        });
+
+        // In-app notification
+        createNotification({
+          recipient: user._id as any,
+          type: "event",
+          title: "Registration Approved! 🎟️",
+          message: `Your registration for "${event.title}" has been confirmed! The event has been added to your profile activity.`,
+          link: `/events/${event.slug || event._id}`,
+          actionLabel: "View Event",
+          priority: "high",
+          metadata: { eventId: event._id },
+        }).catch((err) => console.error("Notification error:", err));
+
+        // Add to event.approvedParticipants
+        const existIdx = event.approvedParticipants.findIndex(
+          (p: any) =>
+            (p.userId && p.userId.toString() === user._id.toString()) ||
+            (p.email && p.email.toLowerCase() === user.email.toLowerCase())
+        );
+
+        const participantObj = {
+          userId: user._id as any,
+          fullName: user.fullName || details.fullName,
+          email: user.email || details.email,
+          studentId: user.studentId || details.studentId,
+          department: user.department || details.department,
+          phone: (user as any).contactNumber || details.phone,
+          teamName: details.teamName,
+          isTeamLeader: !!details.teamName,
+          approvedAt: new Date(),
+        };
+
+        if (existIdx >= 0) {
+          event.approvedParticipants[existIdx] = participantObj;
+        } else {
+          event.approvedParticipants.push(participantObj);
+        }
+      } else {
+        // Non-account guest participant
+        const existIdx = event.approvedParticipants.findIndex(
+          (p: any) => p.email && p.email.toLowerCase() === details.email.toLowerCase()
+        );
+
+        const participantObj = {
+          fullName: details.fullName,
+          email: details.email,
+          studentId: details.studentId,
+          department: details.department,
+          phone: details.phone,
+          teamName: details.teamName,
+          isTeamLeader: !!details.teamName,
+          approvedAt: new Date(),
+        };
+
+        if (existIdx >= 0) {
+          event.approvedParticipants[existIdx] = participantObj;
+        } else {
+          event.approvedParticipants.push(participantObj);
+        }
+      }
+
+      await sub.save();
+      newlyApproved++;
+    }
+
+    await event.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Successfully approved ${newlyApproved} participant${newlyApproved === 1 ? "" : "s"}!`,
+      approvedCount: newlyApproved,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc Bulk reject form submissions
+ * @route POST /api/events/:id/form-submissions/bulk-reject
+ */
+export const bulkRejectFormSubmissions = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id: eventId } = req.params;
+    const { submissionIds } = req.body;
+    const adminId = (req as any).user?._id || (req as any).user?.id;
+
+    if (!Array.isArray(submissionIds) || submissionIds.length === 0) {
+      return res.status(400).json({ success: false, message: "No submission IDs provided." });
+    }
+
+    const event = await Event.findById(eventId);
+    if (!event) return res.status(404).json({ success: false, message: "Event not found" });
+
+    const submissions = await FormSubmissionModel.find({
+      _id: { $in: submissionIds.map((id: string) => new mongoose.Types.ObjectId(id)) },
+    });
+
+    let rejectedCount = 0;
+    for (const sub of submissions) {
+      sub.status = "rejected";
+      sub.reviewedAt = new Date();
+      sub.reviewedBy = adminId;
+      await sub.save();
+
+      const details = extractApplicantDetails(sub.responses);
+
+      let userIdToRemove = sub.userId;
+      if (!userIdToRemove && details.email) {
+        const u = await User.findOne({
+          email: { $regex: new RegExp(`^${details.email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+        }).select("_id");
+        if (u) userIdToRemove = u._id;
+      }
+
+      // Remove from event.approvedParticipants and event.attendees if present
+      if (details.email) {
+        event.approvedParticipants = (event.approvedParticipants || []).filter(
+          (p: any) => p.email?.toLowerCase() !== details.email.toLowerCase()
+        );
+      }
+      if (userIdToRemove) {
+        event.attendees = (event.attendees || []).filter(
+          (a: any) => a.toString() !== userIdToRemove.toString()
+        );
+        event.approvedParticipants = (event.approvedParticipants || []).filter(
+          (p: any) => p.userId?.toString() !== userIdToRemove.toString()
+        );
+        await User.findByIdAndUpdate(userIdToRemove, {
+          $pull: { eventsAttended: event._id },
+        });
+
+        // Dispatch in-app notification about status update
+        createNotification({
+          recipient: userIdToRemove as any,
+          type: "event",
+          title: "Registration Update",
+          message: `Your registration status for "${event.title}" has been updated to rejected.`,
+          link: `/events/${event.slug || event._id}`,
+          actionLabel: "View Event",
+          priority: "normal",
+          metadata: { eventId: event._id },
+        }).catch((err) => console.error("Notification error:", err));
+      }
+
+      // Also clean up from pendingParticipants if present
+      event.pendingParticipants = (event.pendingParticipants || []).filter(
+        (p: any) =>
+          (!details.email || p.leaderEmail?.toLowerCase() !== details.email.toLowerCase()) &&
+          (!userIdToRemove || p.userId?.toString() !== userIdToRemove.toString())
+      );
+
+      rejectedCount++;
+    }
+
+    await event.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Rejected ${rejectedCount} submission${rejectedCount === 1 ? "" : "s"}.`,
+      rejectedCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc Send broadcast emails & announcements to specific event audiences
+ * @route POST /api/events/:id/broadcast
+ */
+export const sendEventBroadcast = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id: eventId } = req.params;
+    const { audience, subject, message, customEmails, isCustomHtml } = req.body;
+
+    if (!subject?.trim() || !message?.trim()) {
+      return res.status(400).json({ success: false, message: "Subject and message are required." });
+    }
+
+    const event = await Event.findById(eventId)
+      .populate("attendees", "fullName email")
+      .populate("contributors.userId", "fullName email")
+      .lean();
+    if (!event) return res.status(404).json({ success: false, message: "Event not found" });
+
+    // Linked forms to gather form respondents
+    const formIdSet = new Set<string>();
+    if (event.linkedForm) formIdSet.add(event.linkedForm.toString());
+    if (Array.isArray(event.forms)) {
+      event.forms.forEach((f: any) => formIdSet.add(f.toString()));
+    }
+    const formsByEvent = await FormModel.find({ eventId: event._id }).select("_id").lean();
+    formsByEvent.forEach((f: any) => formIdSet.add(f._id.toString()));
+    const formIds = Array.from(formIdSet).map((id) => new mongoose.Types.ObjectId(id));
+
+    const submissions = formIds.length > 0 ? await FormSubmissionModel.find({ formId: { $in: formIds } }).lean() : [];
+
+    // Map recipient email -> recipient Name
+    const recipientsMap = new Map<string, { email: string; name: string; userId?: string }>();
+
+    // 1. Approved Participants
+    const addApproved = () => {
+      (event.approvedParticipants || []).forEach((p: any) => {
+        if (p.email) recipientsMap.set(p.email.toLowerCase(), { email: p.email, name: p.fullName, userId: p.userId?.toString() });
+      });
+      (event.attendees || []).forEach((a: any) => {
+        if (a?.email) recipientsMap.set(a.email.toLowerCase(), { email: a.email, name: a.fullName, userId: a._id?.toString() });
+      });
+    };
+
+    // 2. Pending Registrants
+    const addPending = () => {
+      submissions.forEach((sub: any) => {
+        const details = extractApplicantDetails(sub.responses);
+        if (details.email) {
+          recipientsMap.set(details.email.toLowerCase(), {
+            email: details.email,
+            name: details.fullName,
+            userId: sub.userId?.toString(),
+          });
+        }
+      });
+      (event.pendingParticipants || []).forEach((p: any) => {
+        if (p.leaderEmail) {
+          recipientsMap.set(p.leaderEmail.toLowerCase(), {
+            email: p.leaderEmail,
+            name: p.leaderName || p.teamName || "Participant",
+            userId: p.userId?.toString(),
+          });
+        }
+      });
+    };
+
+    // 3. Organizers & Volunteers
+    const addVolunteers = () => {
+      (event.contributors || []).forEach((c: any) => {
+        const email = c.email || (c.userId as any)?.email;
+        const name = c.name || (c.userId as any)?.fullName || "Team Member";
+        if (email) recipientsMap.set(email.toLowerCase(), { email, name, userId: (c.userId as any)?._id?.toString() });
+      });
+    };
+
+    // 4. Sponsors
+    const addSponsors = () => {
+      (event.eventSponsors || []).forEach((s: any) => {
+        // If sponsor contact is tracked
+      });
+    };
+
+    if (audience === "approved_participants") {
+      addApproved();
+    } else if (audience === "pending_registrants") {
+      addPending();
+    } else if (audience === "volunteers") {
+      addVolunteers();
+    } else if (audience === "sponsors") {
+      addSponsors();
+    } else if (audience === "all") {
+      addApproved();
+      addPending();
+      addVolunteers();
+      addSponsors();
+    } else if (audience === "custom" && Array.isArray(customEmails)) {
+      customEmails.forEach((email: string) => {
+        if (email && email.includes("@")) {
+          recipientsMap.set(email.toLowerCase(), { email: email.trim(), name: "Valued Stakeholder" });
+        }
+      });
+    }
+
+    const recipientList = Array.from(recipientsMap.values());
+    if (recipientList.length === 0) {
+      return res.status(400).json({ success: false, message: "No valid recipient email addresses found for the chosen audience." });
+    }
+
+    // Format message as HTML
+    const formattedDate = new Date(event.date).toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+
+    let sentCount = 0;
+    let failedCount = 0;
+
+    const notificationSnippet = isCustomHtml
+      ? message.replace(/<[^>]*>?/gm, " ").replace(/\s+/g, " ").trim().slice(0, 100)
+      : message.slice(0, 100);
+
+    // Send emails
+    for (const recipient of recipientList) {
+      const emailHtml = isCustomHtml
+        ? message.replace(/{{\s*userName\s*}}/g, recipient.name).replace(/{{\s*email\s*}}/g, recipient.email)
+        : `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 28px; border: 2px solid #000; border-radius: 12px; background: #ffffff; color: #1e293b;">
+          <div style="text-align: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 18px; margin-bottom: 22px;">
+            <h1 style="color: #0f172a; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">MEC COMPUTER CLUB</h1>
+            <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px; font-weight: 600; text-transform: uppercase;">Event Announcement • ${event.title}</p>
+          </div>
+
+          <div style="margin-bottom: 22px;">
+            <h2 style="color: #0f172a; margin-top: 0; font-size: 18px;">Hello, ${recipient.name}!</h2>
+            <div style="color: #334155; font-size: 15px; line-height: 1.7; white-space: pre-wrap;">${message.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+          </div>
+
+          <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 16px; margin-bottom: 22px; font-size: 13px;">
+            <p style="margin: 0 0 4px 0; font-weight: bold; color: #0f172a;">Event Reference:</p>
+            <p style="margin: 0; color: #475569;">${event.title} · ${formattedDate} (${event.location})</p>
+          </div>
+
+          <div style="text-align: center; border-top: 1px solid #e2e8f0; padding-top: 18px; color: #94a3b8; font-size: 12px;">
+            <p style="margin: 0;">MEC Computer Club • Official Broadcast</p>
+          </div>
+        </div>
+      `;
+
+      try {
+        await sendEmail(recipient.email, `[${event.title}] ${subject}`, emailHtml);
+        sentCount++;
+      } catch (err) {
+        console.error(`Failed to broadcast to ${recipient.email}:`, err);
+        failedCount++;
+      }
+
+      // If user has a website account, also send in-app notification
+      if (recipient.userId) {
+        createNotification({
+          recipient: recipient.userId as any,
+          type: "announcement",
+          title: `Update: ${event.title} 📢`,
+          message: `${subject}: ${notificationSnippet}...`,
+          link: `/events/${event.slug || event._id}`,
+          actionLabel: "View Event",
+          priority: "normal",
+          metadata: { eventId: event._id },
+        }).catch(() => {});
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Broadcast dispatched! Successfully delivered to ${sentCount} recipient${sentCount === 1 ? "" : "s"}${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
+      sentCount,
+      failedCount,
+      totalRecipients: recipientList.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

@@ -69,11 +69,11 @@ export const createUser = async (payload: Partial<IUser>, validatedInviteDoc?: a
     const invRole = inviteDoc.role.toLowerCase().trim();
     if (invRole === "admin") {
       user.role = "admin";
-      user.clubRole = "executive";
+      user.clubRole = "member";
       user.applicationStatus = "approved";
     } else if (invRole === "moderator") {
       user.role = "moderator";
-      user.clubRole = "executive";
+      user.clubRole = "member";
       user.applicationStatus = "approved";
     } else if (invRole === "executive") {
       user.role = "executive";
@@ -84,8 +84,11 @@ export const createUser = async (payload: Partial<IUser>, validatedInviteDoc?: a
       user.clubRole = "alumni";
       user.isGraduated = true;
     } else if (invRole === "advisor") {
-      user.role = "member";
+      user.role = "advisor";
       user.clubRole = "advisor";
+      user.applicationStatus = "approved";
+      user.approvedAt = new Date();
+      user.profileStatus = "active";
     } else {
       user.role = user.role && user.role !== "guest" ? user.role : "member";
       user.clubRole = user.clubRole || "member";
@@ -317,9 +320,23 @@ export const changePassword = async (
   currentPassword: string,
   newPassword: string
 ) => {
+  if (!currentPassword) {
+    throw new Error("Current password is required.");
+  }
+  if (!newPassword || newPassword.length < 6) {
+    throw new Error("New password must be at least 6 characters long.");
+  }
   const user = await User.findById(userId).select("+password");
-  if (!user) throw new Error("User not found");
-  if (!user.comparePassword(currentPassword)) throw new Error("Invalid current password");
+  if (!user) throw new Error("User not found.");
+
+  const isMatch = await user.comparePassword(currentPassword);
+  if (!isMatch) {
+    throw new Error("Incorrect current password. Please enter your valid current password.");
+  }
+  if (currentPassword === newPassword) {
+    throw new Error("New password cannot be the same as your current password.");
+  }
+
   user.password = newPassword;
   await user.save();
   return user;
@@ -327,17 +344,24 @@ export const changePassword = async (
 
 export const getPublicUserProfile = async (identifier: string) => {
   let user: IUser | null = null;
-  const projection = "-password -verificationToken -passwordResetToken -contactNumber";
+  const projection = "-password -verificationToken -passwordResetToken -contactNumber -security";
   if (identifier.match(/^[0-9a-fA-F]{24}$/)) {
     user = await User.findById(identifier).select(projection);
   } else if (identifier.includes("@")) {
     user = await User.findOne({ email: identifier }).select(projection);
   } else {
+    // Try studentId first, then fall back to fullName (case-insensitive, partial match)
     user = await User.findOne({ studentId: identifier }).select(projection);
+    if (!user) {
+      user = await User.findOne({
+        fullName: { $regex: identifier, $options: "i" },
+      }).select(projection);
+    }
   }
   if (!user) throw new Error("User not found");
   return user;
 };
+
 
 export const getUserProfile = async (identifier: string) => {
   let user: IUser | null = null;

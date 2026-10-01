@@ -80,8 +80,10 @@ export interface IParticipationClaim {
 export interface IEventContributor {
   _id?: string;
   name: string;
-  role: string; // e.g. "Lead Organizer", "Keynote Speaker", "Event Mentor", "Technical Lead"
+  role: string; // e.g. "Lead Organizer", "Event Volunteer", "Technical Team", "Logistics", "Stage & Media", "Judge"
   department?: string;
+  studentId?: string;
+  email?: string;
   userId?: mongoose.Types.ObjectId;
   avatarUrl?: string;
 }
@@ -114,9 +116,10 @@ export interface IEvent extends Document {
   rewards: IEventReward[];
   schedule: IEventScheduleItem[];
   rules: string[];
-  // Media
   coverImageUrl?: string;
+  coverImagePosition?: string;
   bannerImageUrl?: string;
+  bannerImagePosition?: string;
   // Organiser
   organizer?: string;
   contactEmail?: string;
@@ -124,6 +127,7 @@ export interface IEvent extends Document {
   // Tags & visibility
   tags: string[];
   isPublished: boolean;
+  notificationSent?: boolean;
   // Custom HTML section
   customHtmlSection?: string;
   // Participants
@@ -140,6 +144,7 @@ export interface IEvent extends Document {
   projects: mongoose.Types.ObjectId[];
   forms: mongoose.Types.ObjectId[];
   linkedForm?: mongoose.Types.ObjectId;
+  registeredCount?: number;
 }
 
 const WinnerSchema = new Schema<IWinner>({
@@ -225,6 +230,8 @@ const EventContributorSchema = new Schema<IEventContributor>({
   name: { type: String, required: true, trim: true },
   role: { type: String, required: true, trim: true },
   department: { type: String, trim: true },
+  studentId: { type: String, trim: true },
+  email: { type: String, trim: true },
   userId: { type: Schema.Types.ObjectId, ref: "User" },
   avatarUrl: { type: String },
 }, { _id: true });
@@ -275,12 +282,15 @@ const EventSchema: Schema = new Schema(
     rules: { type: [String], default: [] },
     // Media
     coverImageUrl: { type: String },
+    coverImagePosition: { type: String, default: "50% 50%" },
     bannerImageUrl: { type: String },
+    bannerImagePosition: { type: String, default: "50% 50%" },
     organizer: { type: String, trim: true },
     contactEmail: { type: String, trim: true },
     contactPhone: { type: String, trim: true },
     tags: { type: [String], default: [] },
     isPublished: { type: Boolean, default: true },
+    notificationSent: { type: Boolean, default: false },
     customHtmlSection: { type: String },
     // Participants
     attendees: [{ type: Schema.Types.ObjectId, ref: "User" }],
@@ -309,6 +319,8 @@ EventSchema.index({ slug: 1 });
 EventSchema.index({ status: 1, date: -1 });
 
 EventSchema.virtual("isUpcoming").get(function (this: IEvent) {
+  if (this.status === "scheduled") return true;
+  if (this.status === "completed" || this.status === "cancelled") return false;
   return this.date > new Date();
 });
 
