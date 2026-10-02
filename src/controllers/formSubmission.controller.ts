@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
-import FormModel from "../models/Form.model";
+import FormModel, { isFormClosed } from "../models/Form.model";
 import FormSubmissionModel from "../models/FormSubmission.model";
+import { deleteFromCloudinary } from "../services/upload.service";
 import AppError from "../utils/AppError";
 
 declare global {
@@ -27,6 +28,12 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
 
     if (!form || !form.isActive) {
       return next(new AppError("Form not available", 404));
+    }
+
+    if (isFormClosed(form)) {
+      return next(
+        new AppError("This form has reached its deadline and is no longer accepting responses.", 403)
+      );
     }
 
     // Check for duplicate submissions if restricted
@@ -297,7 +304,6 @@ export const deleteSubmission = async (req: Request, res: Response, next: NextFu
 
     // Delete any media files in responses
     if (submission.responses) {
-      const { deleteFromCloudinary } = await import("../services/upload.service");
       for (const val of Object.values(submission.responses)) {
         if (typeof val === "string" && val.includes("cloudinary.com")) {
           try {

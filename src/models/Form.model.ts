@@ -22,6 +22,66 @@ export interface IForm {
   allowMultipleSubmissions: boolean;
   startDate?: string;
   endDate?: string;
+  closingTime?: string;
+}
+
+/**
+ * Parses the form closing date & time into an accurate Date object.
+ * Supports standard YYYY-MM-DD + HH:mm (or 12-hour AM/PM) with Bangladesh Standard Time (UTC+6) attribution.
+ * If no closing time is specified, defaults to 23:59:59 on the closing date.
+ */
+export function parseFormClosingDate(endDate?: string, closingTime?: string): Date | null {
+  if (!endDate || !endDate.trim()) return null;
+
+  // If already an ISO string with time
+  if (endDate.includes("T")) {
+    const d = new Date(endDate);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  const parts = endDate.trim().split("-");
+  if (parts.length !== 3) {
+    const d = new Date(endDate);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1;
+  const day = parseInt(parts[2], 10);
+
+  let hours = 23;
+  let minutes = 59;
+  let seconds = 59;
+
+  if (closingTime && closingTime.trim()) {
+    const timeMatch = closingTime.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+    if (timeMatch) {
+      let h = parseInt(timeMatch[1], 10);
+      const m = parseInt(timeMatch[2], 10);
+      const s = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+      const meridiem = timeMatch[4]?.toUpperCase();
+
+      if (meridiem === "PM" && h < 12) h += 12;
+      if (meridiem === "AM" && h === 12) h = 0;
+
+      hours = h;
+      minutes = m;
+      seconds = s;
+    }
+  }
+
+  // Explicitly attribute to Bangladesh Standard Time (UTC+06:00)
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const isoBst = `${year}-${pad(month + 1)}-${pad(day)}T${pad(hours)}:${pad(minutes)}:${pad(seconds)}+06:00`;
+  const parsed = new Date(isoBst);
+  return isNaN(parsed.getTime()) ? new Date(year, month, day, hours, minutes, seconds) : parsed;
+}
+
+export function isFormClosed(form: { endDate?: string; closingTime?: string; isActive?: boolean }): boolean {
+  if (form.isActive === false) return true;
+  const closingDate = parseFormClosingDate(form.endDate, form.closingTime);
+  if (!closingDate) return false;
+  return Date.now() >= closingDate.getTime();
 }
 
 const FieldSchema = new Schema<IFormField>(
@@ -55,10 +115,14 @@ const FormSchema = new Schema<IForm>(
     allowMultipleSubmissions: { type: Boolean, default: true },
     startDate: {
       type: String,
-      default: new Date().toISOString(),
+      default: () => new Date().toISOString(),
     },
     endDate: {
       type: String,
+    },
+    closingTime: {
+      type: String,
+      default: "",
     },
   },
   {
@@ -69,14 +133,24 @@ const FormSchema = new Schema<IForm>(
 );
 
 FormSchema.virtual("status").get(function (this: IForm) {
-  const currentDate = new Date().toISOString();
-  if (this.endDate && this.endDate < currentDate) {
-    return "closed";
-  } else if (this.startDate && this.startDate > currentDate) {
-    return "draft";
-  } else {
-    return "published";
+  if (this.isActive === false) return "closed";
+  if (isFormClosed(this)) return "closed";
+  if (this.startDate) {
+    const start = new Date(this.startDate);
+    if (!isNaN(start.getTime()) && Date.now() < start.getTime()) {
+      return "draft";
+    }
   }
+  return "published";
+});
+
+FormSchema.virtual("isClosed").get(function (this: IForm) {
+  return isFormClosed(this);
+});
+
+FormSchema.virtual("closingDateFormatted").get(function (this: IForm) {
+  const d = parseFormClosingDate(this.endDate, this.closingTime);
+  return d ? d.toISOString() : null;
 });
 
 export default model<IForm>("Form", FormSchema);

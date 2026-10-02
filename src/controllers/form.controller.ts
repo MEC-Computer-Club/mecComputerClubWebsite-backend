@@ -53,7 +53,7 @@ function extractCloudinaryPublicId(urlOrId: string): string | null {
  */
 export const createForm = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, eventId, description, startDate, endDate, fields, coverImageUrl, allowMultipleSubmissions } = req.body;
+    const { title, eventId, description, startDate, endDate, closingTime, fields, coverImageUrl, allowMultipleSubmissions } = req.body;
 
     if (!title || !fields?.length) {
       return next(new AppError("Title and fields are required", 400));
@@ -77,6 +77,7 @@ export const createForm = async (req: Request, res: Response, next: NextFunction
       coverImageUrl: coverImageUrl || "",
       startDate,
       endDate,
+      closingTime: closingTime || "",
       fields,
       allowMultipleSubmissions: allowMultipleSubmissions !== false, // default true
     });
@@ -292,7 +293,7 @@ export const deleteForm = async (req: Request, res: Response, next: NextFunction
  */
 export const updateForm = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, eventId, description, startDate, endDate, fields, coverImageUrl, allowMultipleSubmissions, isActive } = req.body;
+    const { title, eventId, description, startDate, endDate, closingTime, fields, coverImageUrl, allowMultipleSubmissions, isActive } = req.body;
 
     const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
     const query = isObjectId
@@ -322,6 +323,7 @@ export const updateForm = async (req: Request, res: Response, next: NextFunction
     if (coverImageUrl !== undefined) existingForm.coverImageUrl = coverImageUrl;
     if (startDate !== undefined) existingForm.startDate = startDate;
     if (endDate !== undefined) existingForm.endDate = endDate;
+    if (closingTime !== undefined) existingForm.closingTime = closingTime;
     if (fields !== undefined) existingForm.fields = fields;
     if (allowMultipleSubmissions !== undefined) existingForm.allowMultipleSubmissions = allowMultipleSubmissions;
     if (isActive !== undefined) existingForm.isActive = isActive;
