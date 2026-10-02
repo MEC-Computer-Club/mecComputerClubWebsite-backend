@@ -281,27 +281,18 @@ export const exportSubmissions = async (req: Request, res: Response, next: NextF
 
     const fields = form.fields || [];
 
-    const headers = ["#", "Submitted By", "Account Email", "Submitted At", ...fields.map((f) => f.label)];
-    const rows = submissions.map((sub: any, i) => {
-      const r = sub.responses || {};
-      const fallbackName = r.full_name || r.fullName || r.name || r.applicant_name || r.leader_name;
-      const fallbackEmail = r.email_address || r.email || r.contact_email || r.user_email;
-      const submitterName = sub.userId?.fullName || fallbackName || "Anonymous";
-      const submitterEmail = sub.userId?.email || fallbackEmail || "N/A";
-      return [
-        i + 1,
-        submitterName,
-        submitterEmail,
-        new Date(sub.createdAt).toLocaleString("en-GB"),
-        ...fields.map((f) => {
-          const val = sub.responses?.[f.name];
-          if (val == null) return "";
-          if (Array.isArray(val)) return val.join(", ");
-          if (typeof val === "object") return val.url || JSON.stringify(val);
-          return String(val);
-        }),
-      ];
-    });
+    const headers = ["#", "Submitted At", ...fields.map((f) => f.label)];
+    const rows = submissions.map((sub: any, i) => [
+      i + 1,
+      new Date(sub.createdAt).toLocaleString("en-GB"),
+      ...fields.map((f) => {
+        const val = sub.responses?.[f.name];
+        if (val == null) return "";
+        if (Array.isArray(val)) return val.join(", ");
+        if (typeof val === "object") return val.url || JSON.stringify(val);
+        return String(val);
+      }),
+    ]);
 
     const sanitizedTitle = (form.title || "Form Responses").replace(/[/\\?%*:|"<>]/g, "_").trim();
 
@@ -309,8 +300,6 @@ export const exportSubmissions = async (req: Request, res: Response, next: NextF
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
       ws["!cols"] = [
         { wch: 6 },
-        { wch: 22 },
-        { wch: 26 },
         { wch: 20 },
         ...fields.map((f) => ({ wch: Math.max(18, Math.min(45, f.label.length + 4)) })),
       ];

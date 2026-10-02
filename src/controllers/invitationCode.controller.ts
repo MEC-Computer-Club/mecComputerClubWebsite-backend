@@ -5,6 +5,7 @@ import { sendEmail } from "../utils/sendEmail";
 import UserModel from "../models/User.model";
 import { generateEmail } from "../utils/generateEmailTemplate";
 import mongoose from "mongoose";
+import AuditLog from "../models/AuditLog.model";
 
 /**
  * Create & Dispatch Invitation Code
@@ -84,6 +85,9 @@ export const createInvitationCode = async (req: Request, res: Response) => {
       // Universal permanent code: default requireApproval to true unless explicitly disabled
       const permanentRequireApproval =
         requireApproval !== undefined ? Boolean(requireApproval) : true;
+      const currentUser = (req as any).user;
+      const createdBy = currentUser?._id;
+      const creatorName = currentUser?.fullName || currentUser?.name || "Staff Admin";
 
       const invite = await InvitationCode.create({
         code,
@@ -97,7 +101,27 @@ export const createInvitationCode = async (req: Request, res: Response) => {
         usageCount: 0,
         maxUses: parseInt(maxUses) || 0,
         requireApproval: permanentRequireApproval,
+        createdBy,
+        creatorName,
       });
+
+      // Audit Log Entry
+      AuditLog.create({
+        actor: createdBy,
+        actorName: creatorName,
+        actorEmail: currentUser?.email,
+        actorRole: currentUser?.role || "admin",
+        action: "CREATE",
+        targetType: "INVITATION",
+        targetId: invite._id.toString(),
+        targetTitle: `Invitation Code: ${invite.code} (${invite.role})`,
+        description: `${creatorName} created permanent invitation code "${invite.code}" for role "${invite.role}".`,
+        diff: [
+          { field: "Code Type", newValue: "permanent" },
+          { field: "Role", newValue: invite.role },
+          { field: "Requires Approval", newValue: permanentRequireApproval ? "Yes" : "No (Auto-approved)" },
+        ],
+      }).catch((logErr) => console.error("Failed to write audit log for invitation:", logErr));
 
       return res.json({
         success: true,
@@ -148,6 +172,10 @@ export const createInvitationCode = async (req: Request, res: Response) => {
           }
         }
 
+        const currentUser = (req as any).user;
+        const createdBy = currentUser?._id;
+        const creatorName = currentUser?.fullName || currentUser?.name || "Staff Admin";
+
         const invite = await InvitationCode.create({
           code,
           codeType: "single_use",
@@ -160,9 +188,29 @@ export const createInvitationCode = async (req: Request, res: Response) => {
           usageCount: 0,
           maxUses: 1,
           requireApproval: false, // Individual invitations bypass admin approval!
+          createdBy,
+          creatorName,
         });
 
         createdInvites.push(invite);
+
+        // Audit Log Entry
+        AuditLog.create({
+          actor: createdBy,
+          actorName: creatorName,
+          actorEmail: currentUser?.email,
+          actorRole: currentUser?.role || "admin",
+          action: "CREATE",
+          targetType: "INVITATION",
+          targetId: invite._id.toString(),
+          targetTitle: `Invitation for ${cleanEmail} (${role || "member"})`,
+          description: `${creatorName} issued single-use invitation code "${invite.code}" to ${cleanEmail}.`,
+          diff: [
+            { field: "Code Type", newValue: "single_use" },
+            { field: "Recipient Email", newValue: cleanEmail },
+            { field: "Role", newValue: role || "member" },
+          ],
+        }).catch((logErr) => console.error("Failed to write audit log for invitation:", logErr));
 
         // Send Email if requested
         if (sendEmailNotification) {

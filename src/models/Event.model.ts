@@ -144,7 +144,12 @@ export interface IEvent extends Document {
   projects: mongoose.Types.ObjectId[];
   forms: mongoose.Types.ObjectId[];
   linkedForm?: mongoose.Types.ObjectId;
+  providesCertificate?: boolean;
   registeredCount?: number;
+  createdBy?: mongoose.Types.ObjectId;
+  createdByName?: string;
+  lastUpdatedBy?: mongoose.Types.ObjectId;
+  lastUpdatedByName?: string;
 }
 
 const WinnerSchema = new Schema<IWinner>({
@@ -271,6 +276,7 @@ const EventSchema: Schema = new Schema(
     registrationDeadline: { type: Date },
     maxParticipants: { type: Number },
     registrationFee: { type: Number, default: 0 },
+    providesCertificate: { type: Boolean, default: false },
     // Past Event Archiving & Participation Claims
     allowParticipationClaims: { type: Boolean, default: false },
     participationClaims: { type: [ParticipationClaimSchema], default: [] },
@@ -306,6 +312,10 @@ const EventSchema: Schema = new Schema(
     projects: [{ type: Schema.Types.ObjectId, ref: "Project" }],
     forms: [{ type: Schema.Types.ObjectId, ref: "Form" }],
     linkedForm: { type: Schema.Types.ObjectId, ref: "Form" },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", index: true },
+    createdByName: { type: String, trim: true },
+    lastUpdatedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    lastUpdatedByName: { type: String, trim: true },
   },
   {
     timestamps: true,

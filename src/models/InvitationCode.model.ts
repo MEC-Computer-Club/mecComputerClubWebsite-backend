@@ -19,6 +19,9 @@ export interface IInvitationCode extends Document {
 
   requireApproval?: boolean; // If true, requires admin approval before login; if false, auto-approved
 
+  createdBy?: Schema.Types.ObjectId; // User ID of Admin/Moderator who generated this code
+  creatorName?: string; // Display name of creator
+
   expiresAt?: Date; // Expiration timestamp (optional / far future for permanent)
 
   createdAt: Date;
@@ -88,6 +91,18 @@ const InvitationCodeSchema = new Schema<IInvitationCode>(
       type: Boolean,
       default: false,
       index: true,
+    },
+
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+    },
+
+    creatorName: {
+      type: String,
+      trim: true,
+      default: "",
     },
 
     expiresAt: {

@@ -30,6 +30,7 @@ import emailTemplateRoutes from "./routes/emailTemplate.routes";
 import instituteRoutes from "./routes/institute.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import committeeRoutes from "./routes/committee.routes";
+import auditLogRoutes from "./routes/auditLog.routes";
 import { getGalleryMedia } from "./controllers/event.controller";
 
 // Ensure all models are registered with Mongoose before any route handler runs
@@ -148,6 +149,7 @@ app.use("/api/blogs", blogRoutes);
 app.use("/api/sponsors", sponsorRoutes);
 app.use("/api/projects", projectRoutes);
 app.use("/api/custom-pages", customPageRoutes);
+app.use("/api/audit-logs", auditLogRoutes);
 app.use("/api/designations", designationRoutes);
 app.use("/api/committees", committeeRoutes);
 app.use("/api/page-content", pageContentRoutes);

@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import SiteSetting from "../models/SiteSetting.model";
+import ClubRoomLog from "../models/ClubRoomLog.model";
+import AuditLog from "../models/AuditLog.model";
 
 // Default settings seeded when none exist
 const DEFAULT_SETTINGS = [
@@ -114,15 +116,18 @@ export const getPublicBatchSettings = async (req: Request, res: Response, next: 
  */
 export const updateClubRoomStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { status } = req.body;
+    const { status, notes } = req.body;
     if (!status || (status !== "open" && status !== "closed")) {
       return res.status(400).json({ success: false, message: "Status must be 'open' or 'closed'" });
     }
 
     const user = (req as any).user;
-    const openedBy = status === "open" ? (user?.fullName || user?.name || "Club Executive") : "";
+    const actorName = user?.fullName || user?.name || "Club Executive";
+    const openedBy = status === "open" ? actorName : "";
     const updatedAt = new Date().toISOString();
+    const now = new Date();
 
+    // 1. Maintain singleton site setting for immediate lightweight badge checks
     await Promise.all([
       SiteSetting.findOneAndUpdate(
         { key: "club_room_status" },
@@ -141,6 +146,73 @@ export const updateClubRoomStatus = async (req: Request, res: Response, next: Ne
       ),
     ]);
 
+    // 2. Historical Club Room Log Book Tracking
+    if (status === "open") {
+      // Create new open session log
+      await ClubRoomLog.create({
+        status: "open",
+        openedAt: now,
+        actor: user?._id,
+        actorName,
+        actorEmail: user?.email,
+        actorRole: user?.role || "executive",
+        notes: notes || "",
+      });
+
+      // Audit Log entry
+      AuditLog.create({
+        actor: user?._id,
+        actorName,
+        actorEmail: user?.email,
+        actorRole: user?.role || "executive",
+        action: "ROOM_OPEN",
+        targetType: "CLUB_ROOM",
+        targetTitle: "Club Room 302",
+        description: `${actorName} opened the club room for active sessions.`,
+        diff: [{ field: "Status", previousValue: "closed", newValue: "open" }],
+      }).catch((err) => console.error("Room open audit error:", err));
+    } else {
+      // Status === "closed": find the most recent open session and close it
+      const lastOpenLog = await ClubRoomLog.findOne({ status: "open" }).sort({ openedAt: -1 });
+      let durationMinutes = 0;
+      if (lastOpenLog && lastOpenLog.openedAt) {
+        const diffMs = now.getTime() - new Date(lastOpenLog.openedAt).getTime();
+        durationMinutes = Math.max(1, Math.round(diffMs / 60000));
+        lastOpenLog.status = "closed";
+        lastOpenLog.closedAt = now;
+        lastOpenLog.durationMinutes = durationMinutes;
+        if (notes) lastOpenLog.notes = (lastOpenLog.notes ? `${lastOpenLog.notes}; ` : "") + notes;
+        await lastOpenLog.save();
+      } else {
+        // Fallback: create closed record
+        await ClubRoomLog.create({
+          status: "closed",
+          closedAt: now,
+          actor: user?._id,
+          actorName,
+          actorEmail: user?.email,
+          actorRole: user?.role || "executive",
+          notes: notes || "",
+        });
+      }
+
+      // Audit Log entry
+      AuditLog.create({
+        actor: user?._id,
+        actorName,
+        actorEmail: user?.email,
+        actorRole: user?.role || "executive",
+        action: "ROOM_CLOSE",
+        targetType: "CLUB_ROOM",
+        targetTitle: "Club Room 302",
+        description: `${actorName} closed the club room${durationMinutes ? ` (session duration: ${durationMinutes} mins)` : ""}.`,
+        diff: [
+          { field: "Status", previousValue: "open", newValue: "closed" },
+          { field: "Session Duration", newValue: `${durationMinutes} minutes` },
+        ],
+      }).catch((err) => console.error("Room close audit error:", err));
+    }
+
     res.status(200).json({
       success: true,
       message: `Club room is now ${status}`,
@@ -148,6 +220,67 @@ export const updateClubRoomStatus = async (req: Request, res: Response, next: Ne
         status,
         openedBy,
         updatedAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc Get historical club room log book with optional month/date range filtering
+ * @route GET /api/site-settings/club-room/logs
+ */
+export const getClubRoomLogs = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { range, month, year, page = "1", limit = "50" } = req.query;
+    const filter: any = {};
+
+    const now = new Date();
+    if (range === "last_month") {
+      const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      filter.createdAt = { $gte: startOfLastMonth, $lte: endOfLastMonth };
+    } else if (range === "this_month") {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      filter.createdAt = { $gte: startOfMonth };
+    } else if (month && year) {
+      const m = parseInt(month as string, 10) - 1;
+      const y = parseInt(year as string, 10);
+      const start = new Date(y, m, 1);
+      const end = new Date(y, m + 1, 0, 23, 59, 59, 999);
+      filter.createdAt = { $gte: start, $lte: end };
+    }
+
+    const p = Math.max(1, parseInt(page as string, 10) || 1);
+    const lim = Math.max(1, parseInt(limit as string, 10) || 50);
+    const skip = (p - 1) * lim;
+
+    const [logs, total, totalStats] = await Promise.all([
+      ClubRoomLog.find(filter).sort({ createdAt: -1 }).skip(skip).limit(lim).lean(),
+      ClubRoomLog.countDocuments(filter),
+      ClubRoomLog.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalMinutes: { $sum: "$durationMinutes" },
+            sessionsCount: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    const stats = totalStats[0] || { totalMinutes: 0, sessionsCount: 0 };
+
+    res.status(200).json({
+      success: true,
+      logs,
+      total,
+      stats: {
+        totalMinutes: stats.totalMinutes,
+        totalHours: (stats.totalMinutes / 60).toFixed(1),
+        sessionsCount: stats.sessionsCount,
       },
     });
   } catch (error) {

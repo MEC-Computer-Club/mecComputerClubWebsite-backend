@@ -6,6 +6,7 @@ import {
   updateSiteSettings,
   upsertSiteSetting,
   updateClubRoomStatus,
+  getClubRoomLogs,
 } from "../controllers/siteSetting.controller";
 
 const router = Router();
@@ -13,8 +14,9 @@ const router = Router();
 // Public: get only batch settings & club room status (no auth required)
 router.get("/public", getPublicBatchSettings);
 
-// Admin & Executive: update club room status
+// Admin & Executive: update club room status and fetch log book
 router.patch("/club-room", authMiddleware(["admin", "moderator", "executive"]), updateClubRoomStatus);
+router.get("/club-room/logs", authMiddleware(["admin", "moderator", "executive"]), getClubRoomLogs);
 
 // Admin: get all settings
 router.get("/", authMiddleware(["admin", "moderator"]), getSiteSettings);

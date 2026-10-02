@@ -1404,8 +1404,8 @@ export const adminCreateMember = async (req: Request, res: Response) => {
     const clubRole = payload.clubRole || "member";
     payload.clubRole = clubRole;
 
-    if (!payload.role) {
-      payload.role = payload.systemRole || "member";
+    if (!payload.role || payload.role === "member") {
+      payload.role = payload.systemRole || (clubRole === "advisor" ? "advisor" : "member");
     }
 
     if (!payload.studentId) {

@@ -24,9 +24,15 @@ import http from "http";
 
 export const deleteImage = async (req: Request, res: Response) => {
   try {
-    const { public_id } = req.body;
+    let { public_id, url } = req.body;
+    if (!public_id && url && typeof url === "string") {
+      const match = url.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-zA-Z0-9]+)?$/);
+      if (match && match[1]) {
+        public_id = match[1];
+      }
+    }
     if (!public_id) {
-      return res.status(400).json({ message: "public_id is required" });
+      return res.status(400).json({ message: "public_id or url is required" });
     }
     await deleteFromCloudinary(public_id);
     res.json({ success: true, message: "Image deleted from Cloudinary." });

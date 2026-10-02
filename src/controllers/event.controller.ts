@@ -11,6 +11,7 @@ import { uploadToCloudinary, deleteFromCloudinary } from "../services/upload.ser
 import { sendEmail } from "../utils/sendEmail";
 import { createNotification, createBroadcastNotification } from "../services/notification.service";
 import crypto from "crypto";
+import AuditLog from "../models/AuditLog.model";
 
 // ── Basic CRUD ─────────────────────────────────────────────────────────────
 
@@ -20,7 +21,33 @@ export const handleCreateEvent = async (req: Request, res: Response) => {
       delete req.body.linkedForm;
     }
 
+    const currentUser = (req as any).user;
+    if (currentUser) {
+      req.body.createdBy = currentUser._id;
+      req.body.createdByName = currentUser.fullName || currentUser.name || "Staff Admin";
+    }
+
     const event = await EventService.createEvent(req.body);
+
+    // Write audit log entry
+    if (currentUser) {
+      AuditLog.create({
+        actor: currentUser._id,
+        actorName: currentUser.fullName || currentUser.name || "Staff Admin",
+        actorEmail: currentUser.email,
+        actorRole: currentUser.role || "admin",
+        action: "CREATE",
+        targetType: "EVENT",
+        targetId: event._id.toString(),
+        targetTitle: event.title,
+        description: `${currentUser.fullName || "Admin"} created event "${event.title}" (${event.category}).`,
+        diff: [
+          { field: "Status", newValue: event.status },
+          { field: "Is Published", newValue: event.isPublished ? "Yes" : "No" },
+          { field: "Category", newValue: event.category },
+        ],
+      }).catch((logErr) => console.error("Event creation audit log error:", logErr));
+    }
 
     // Two-way sync: If linkedForm was selected, link form to this event (it is no longer independent)
     if (event.linkedForm && mongoose.Types.ObjectId.isValid(event.linkedForm.toString())) {
@@ -220,7 +247,7 @@ export const handleGetEventById = async (req: Request, res: Response) => {
     if (!event) return res.status(404).json({ success: false, message: "Event not found" });
 
     // Normalise — ensure arrays exist even on old documents
-    const data = event.toObject({ virtuals: true });
+    const data: any = event.toObject({ virtuals: true });
     data.pendingParticipants = data.pendingParticipants || [];
     data.participationClaims = data.participationClaims || [];
     data.contributors = data.contributors || [];
@@ -253,6 +280,12 @@ export const handleGetEventById = async (req: Request, res: Response) => {
       associatedFormIds.add(mf._id.toString());
     }
 
+    if (!data.linkedForm && formsWithEventId.length > 0) {
+      data.linkedForm = formsWithEventId[0]._id.toString();
+    } else if (event.linkedForm) {
+      data.linkedForm = (event.linkedForm as any)._id ? (event.linkedForm as any)._id.toString() : event.linkedForm.toString();
+    }
+
     if (associatedFormIds.size > 0) {
       formSubs = await FormSubmissionModel.countDocuments({
         formId: { $in: Array.from(associatedFormIds).map((id) => new mongoose.Types.ObjectId(id)) },
@@ -264,6 +297,35 @@ export const handleGetEventById = async (req: Request, res: Response) => {
     const attendeesCount = Array.isArray(data.attendees) ? data.attendees.length : 0;
     const directCount = approvedCount + pendingCount;
     data.registeredCount = formSubs > 0 ? formSubs : (directCount > 0 ? directCount : attendeesCount);
+
+    // Dynamically sync registration deadline from linked form if present
+    let linkedFormDoc: any = null;
+    if (formIdStr && mongoose.Types.ObjectId.isValid(formIdStr)) {
+      linkedFormDoc = await FormModel.findById(formIdStr)
+        .select("code title endDate closingTime isClosed acceptingResponses")
+        .lean();
+    } else if (formsWithEventId.length > 0) {
+      linkedFormDoc = await FormModel.findById(formsWithEventId[0]._id)
+        .select("code title endDate closingTime isClosed acceptingResponses")
+        .lean();
+    }
+
+    if (linkedFormDoc) {
+      if (linkedFormDoc.endDate) {
+        const time = linkedFormDoc.closingTime || "23:59";
+        const parts = linkedFormDoc.endDate.split("-");
+        if (parts.length === 3) {
+          const bstIso = new Date(
+            `${parts[0]}-${parts[1].padStart(2, "0")}-${parts[2].padStart(2, "0")}T${
+              time.length === 5 ? time + ":00" : time
+            }+06:00`
+          ).toISOString();
+          data.registrationDeadline = bstIso;
+        }
+      }
+      data.linkedForm = linkedFormDoc.code || linkedFormDoc._id.toString();
+      data.isFormClosed = Boolean(linkedFormDoc.isClosed || linkedFormDoc.acceptingResponses === false);
+    }
 
     res.status(200).json({ success: true, data });
   } catch (error: any) {
