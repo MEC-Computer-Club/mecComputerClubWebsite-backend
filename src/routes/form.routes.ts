@@ -16,7 +16,7 @@ import {
   deleteSubmission,
   updateSubmission,
 } from "../controllers/formSubmission.controller";
-import { authMiddleware } from "../middlewares/auth.middleware";
+import { authMiddleware, optionalAuthMiddleware } from "../middlewares/auth.middleware";
 
 import "../docs/form.docs"; // 🔥 IMPORTANT: load swagger docs
 
@@ -50,10 +50,10 @@ router.patch("/disable/:id", authMiddleware(["admin", "moderator", "executive"])
 router.delete("/:id", authMiddleware(["admin", "moderator", "executive"]), deleteForm);
 
 // Submit form
-router.post("/submit/:formId", submitForm);
+router.post("/submit/:formId", optionalAuthMiddleware, submitForm);
 
 // Get submissions of a form (Admin)
-router.get("/submissions/:formId", getSubmissionsByForm);
+router.get("/submissions/:formId", authMiddleware(["admin", "moderator", "executive"]), getSubmissionsByForm);
 
 // Update form (Admin)
 router.put("/:id", authMiddleware(["admin", "moderator", "executive"]), updateForm);

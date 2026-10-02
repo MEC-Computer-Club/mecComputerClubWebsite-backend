@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import FormModel, { isFormClosed } from "../models/Form.model";
 import FormSubmissionModel from "../models/FormSubmission.model";
+import UserModel from "../models/User.model";
 import { deleteFromCloudinary } from "../services/upload.service";
 import AppError from "../utils/AppError";
 
@@ -36,17 +37,28 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
       );
     }
 
+    let resolvedUserId = req?.user?._id || (req?.user as any)?.id || null;
+    const submittedEmail =
+      responses?.email_address ||
+      responses?.email ||
+      responses?.contact_email ||
+      responses?.user_email ||
+      null;
+
+    // Fallback: If token not attached, check if submitted email belongs to a registered member
+    if (!resolvedUserId && submittedEmail && typeof submittedEmail === "string") {
+      const matchedUser = await UserModel.findOne({
+        email: { $regex: new RegExp(`^${submittedEmail.trim()}$`, "i") },
+      }).select("_id");
+      if (matchedUser) {
+        resolvedUserId = matchedUser._id;
+      }
+    }
+
     // Check for duplicate submissions if restricted
     if (!form.allowMultipleSubmissions) {
-      const userId = req?.user?._id;
-      const submittedEmail =
-        responses?.email_address ||
-        responses?.email ||
-        responses?.contact_email ||
-        null;
-
-      if (userId) {
-        const existing = await FormSubmissionModel.findOne({ formId: form._id, userId });
+      if (resolvedUserId) {
+        const existing = await FormSubmissionModel.findOne({ formId: form._id, userId: resolvedUserId });
         if (existing) {
           return next(new AppError("You have already submitted a response for this form.", 400));
         }
@@ -58,7 +70,8 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
           return (
             r?.email_address === submittedEmail ||
             r?.email === submittedEmail ||
-            r?.contact_email === submittedEmail
+            r?.contact_email === submittedEmail ||
+            r?.user_email === submittedEmail
           );
         });
         if (emailExists) {
@@ -76,7 +89,7 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
 
     const submission = await FormSubmissionModel.create({
       formId: form._id,
-      userId: req?.user?._id,
+      userId: resolvedUserId,
       responses,
     });
 
@@ -194,6 +207,27 @@ export const getSubmissionsByForm = async (req: Request, res: Response, next: Ne
       formId: form._id,
     }).populate("userId", "fullName email");
 
+    // Dynamic auto-link for past or unlinked submissions if response email matches a user
+    for (const sub of submissions) {
+      if (!sub.userId && sub.responses) {
+        const r = sub.responses as Record<string, any>;
+        const subEmail =
+          r?.email_address ||
+          r?.email ||
+          r?.contact_email ||
+          r?.user_email;
+        if (subEmail && typeof subEmail === "string") {
+          const matchedUser = await UserModel.findOne({
+            email: { $regex: new RegExp(`^${subEmail.trim()}$`, "i") },
+          }).select("fullName email");
+          if (matchedUser) {
+            (sub as any).userId = matchedUser;
+            FormSubmissionModel.findByIdAndUpdate(sub._id, { userId: matchedUser._id }).catch(() => {});
+          }
+        }
+      }
+    }
+
     res.json({
       success: true,
       data: submissions,
@@ -223,22 +257,51 @@ export const exportSubmissions = async (req: Request, res: Response, next: NextF
     }
 
     const submissions = await FormSubmissionModel.find({ formId: form._id }).populate("userId", "fullName email");
+
+    // Dynamic auto-link for export if unlinked
+    for (const sub of submissions) {
+      if (!sub.userId && sub.responses) {
+        const r = sub.responses as Record<string, any>;
+        const subEmail =
+          r?.email_address ||
+          r?.email ||
+          r?.contact_email ||
+          r?.user_email;
+        if (subEmail && typeof subEmail === "string") {
+          const matchedUser = await UserModel.findOne({
+            email: { $regex: new RegExp(`^${subEmail.trim()}$`, "i") },
+          }).select("fullName email");
+          if (matchedUser) {
+            (sub as any).userId = matchedUser;
+            FormSubmissionModel.findByIdAndUpdate(sub._id, { userId: matchedUser._id }).catch(() => {});
+          }
+        }
+      }
+    }
+
     const fields = form.fields || [];
 
     const headers = ["#", "Submitted By", "Account Email", "Submitted At", ...fields.map((f) => f.label)];
-    const rows = submissions.map((sub: any, i) => [
-      i + 1,
-      sub.userId?.fullName || "Anonymous",
-      sub.userId?.email || "N/A",
-      new Date(sub.createdAt).toLocaleString("en-GB"),
-      ...fields.map((f) => {
-        const val = sub.responses?.[f.name];
-        if (val == null) return "";
-        if (Array.isArray(val)) return val.join(", ");
-        if (typeof val === "object") return val.url || JSON.stringify(val);
-        return String(val);
-      }),
-    ]);
+    const rows = submissions.map((sub: any, i) => {
+      const r = sub.responses || {};
+      const fallbackName = r.full_name || r.fullName || r.name || r.applicant_name || r.leader_name;
+      const fallbackEmail = r.email_address || r.email || r.contact_email || r.user_email;
+      const submitterName = sub.userId?.fullName || fallbackName || "Anonymous";
+      const submitterEmail = sub.userId?.email || fallbackEmail || "N/A";
+      return [
+        i + 1,
+        submitterName,
+        submitterEmail,
+        new Date(sub.createdAt).toLocaleString("en-GB"),
+        ...fields.map((f) => {
+          const val = sub.responses?.[f.name];
+          if (val == null) return "";
+          if (Array.isArray(val)) return val.join(", ");
+          if (typeof val === "object") return val.url || JSON.stringify(val);
+          return String(val);
+        }),
+      ];
+    });
 
     const sanitizedTitle = (form.title || "Form Responses").replace(/[/\\?%*:|"<>]/g, "_").trim();
 
