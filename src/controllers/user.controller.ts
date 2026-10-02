@@ -288,7 +288,7 @@ export const register = async (req: Request, res: Response) => {
 
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, studentId, identifier, loginId, password, securityCode } = req.body;
+    const { email, studentId, identifier, loginId, password, securityCode, rememberMe } = req.body;
     const searchIdentifier = (identifier || loginId || email || studentId || "").trim();
 
     if (!searchIdentifier || !password) {
@@ -515,21 +515,21 @@ export const login = async (req: Request, res: Response) => {
         },
       });
 
-    user.lastLogin = new Date();
-    await user.save();
-    const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
+    const isRemembered = Boolean(rememberMe);
+    const sessionDurationDays = isRemembered ? 30 : 7;
+    const sessionDurationMs = sessionDurationDays * 24 * 60 * 60 * 1000;
 
-    const token = generateJWT({ id: user._id, email: user.email, role: user.role });
+    const token = generateJWT({ id: user._id, email: user.email, role: user.role }, isRemembered ? "30d" : "7d");
     const isProduction = process.env.NODE_ENV === "production";
     res.cookie("auth_token", token, {
       httpOnly: true,
-      maxAge: sevenDaysInMs,
+      maxAge: sessionDurationMs,
       secure: isProduction,
       sameSite: isProduction ? "none" : "lax",
     });
     res.cookie("role", user.role, {
       httpOnly: true,
-      maxAge: sevenDaysInMs,
+      maxAge: sessionDurationMs,
       secure: isProduction,
       sameSite: isProduction ? "none" : "lax",
     });

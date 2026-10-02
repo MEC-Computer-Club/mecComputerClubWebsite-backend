@@ -11,8 +11,8 @@ export interface TokenPayload {
   role: "guest" | "member" | "moderator" | "admin" | "alumni" | "executive" | "advisor";
 }
 
-export const generateJWT = (payload: TokenPayload) => {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN as any });
+export const generateJWT = (payload: TokenPayload, expiresIn?: string) => {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: (expiresIn || JWT_EXPIRES_IN) as any });
 };
 
 export const verifyJWT = (token: string) => {
