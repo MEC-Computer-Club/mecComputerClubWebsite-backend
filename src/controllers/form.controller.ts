@@ -109,9 +109,25 @@ export const getAllForms = async (req: Request, res: Response, next: NextFunctio
       }
     }
 
+    const formIds = forms.map((f) => f._id);
+    const counts = await FormSubmissionModel.aggregate([
+      { $match: { formId: { $in: formIds } } },
+      { $group: { _id: "$formId", count: { $sum: 1 } } },
+    ]);
+    const countMap: Record<string, number> = {};
+    counts.forEach((c: any) => {
+      countMap[c._id.toString()] = c.count;
+    });
+
+    const formsWithCounts = forms.map((f) => {
+      const obj: any = f.toObject();
+      obj.responsesCount = countMap[f._id.toString()] || 0;
+      return obj;
+    });
+
     res.json({
       success: true,
-      data: forms,
+      data: formsWithCounts,
     });
   } catch (error) {
     next(error);

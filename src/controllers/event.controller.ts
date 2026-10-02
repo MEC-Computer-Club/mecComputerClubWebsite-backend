@@ -154,6 +154,8 @@ export const handleGetEvents = async (req: Request, res: Response) => {
 
       const directCount = approvedCount + pendingCount;
       ev.registeredCount = totalFormSubs > 0 ? totalFormSubs : (directCount > 0 ? directCount : attendeesCount);
+      ev.approvedCount = Math.max(approvedCount, attendeesCount);
+      ev.pendingCount = pendingCount;
       return ev;
     });
 
@@ -286,17 +288,32 @@ export const handleGetEventById = async (req: Request, res: Response) => {
       data.linkedForm = (event.linkedForm as any)._id ? (event.linkedForm as any)._id.toString() : event.linkedForm.toString();
     }
 
+    let formPendingCount = 0;
     if (associatedFormIds.size > 0) {
-      formSubs = await FormSubmissionModel.countDocuments({
-        formId: { $in: Array.from(associatedFormIds).map((id) => new mongoose.Types.ObjectId(id)) },
+      const formIds = Array.from(associatedFormIds).map((id) => new mongoose.Types.ObjectId(id));
+      const subs = await FormSubmissionModel.find({ formId: { $in: formIds } }).lean();
+      formSubs = subs.length;
+      const approvedEmails = new Set(
+        (data.approvedParticipants || []).map((p: any) => (p.email || "").toLowerCase()).filter(Boolean)
+      );
+      subs.forEach((s: any) => {
+        const details = extractApplicantDetails(s.responses);
+        const email = (details.email || "").toLowerCase();
+        const isApproved = s.status === "approved" || (email && approvedEmails.has(email));
+        const isRejected = s.status === "rejected";
+        if (!isApproved && !isRejected) {
+          formPendingCount++;
+        }
       });
     }
 
     const approvedCount = Array.isArray(data.approvedParticipants) ? data.approvedParticipants.length : 0;
-    const pendingCount = Array.isArray(data.pendingParticipants) ? data.pendingParticipants.length : 0;
+    const pendingCount = (Array.isArray(data.pendingParticipants) ? data.pendingParticipants.length : 0) + formPendingCount;
     const attendeesCount = Array.isArray(data.attendees) ? data.attendees.length : 0;
     const directCount = approvedCount + pendingCount;
     data.registeredCount = formSubs > 0 ? formSubs : (directCount > 0 ? directCount : attendeesCount);
+    data.approvedCount = Math.max(approvedCount, attendeesCount);
+    data.pendingCount = pendingCount;
 
     // Dynamically sync registration deadline from linked form if present
     let linkedFormDoc: any = null;
