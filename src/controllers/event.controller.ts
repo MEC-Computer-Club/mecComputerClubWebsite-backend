@@ -1879,11 +1879,32 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
       ? message.replace(/<[^>]*>?/gm, " ").replace(/\s+/g, " ").trim().slice(0, 100)
       : message.slice(0, 100);
 
-    // Send emails
-    for (const recipient of recipientList) {
-      const emailHtml = isCustomHtml
-        ? message.replace(/{{\s*userName\s*}}/g, recipient.name).replace(/{{\s*email\s*}}/g, recipient.email)
-        : `
+    // Determine appropriate greeting based on audience and recipient count
+    const getGroupGreeting = (aud: string): string => {
+      switch (aud) {
+        case "approved_participants":
+          return "Hello Participants & Attendees!";
+        case "pending_registrants":
+          return "Hello Applicants & Registrants!";
+        case "volunteers":
+          return "Hello Organizing Team & Volunteers!";
+        case "sponsors":
+          return "Hello Valued Sponsors & Partners!";
+        case "all":
+        case "custom":
+        default:
+          return "Hello Everyone!";
+      }
+    };
+
+    const generateEmailHtml = (greeting: string, recipientEmail = ""): string => {
+      if (isCustomHtml) {
+        return message
+          .replace(/{{\s*userName\s*}}/g, recipientList.length === 1 ? recipientList[0].name : "Participant")
+          .replace(/{{\s*email\s*}}/g, recipientEmail);
+      }
+
+      return `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 28px; border: 2px solid #000; border-radius: 12px; background: #ffffff; color: #1e293b;">
           <div style="text-align: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 18px; margin-bottom: 22px;">
             <h1 style="color: #0f172a; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">MEC COMPUTER CLUB</h1>
@@ -1891,13 +1912,13 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
           </div>
 
           <div style="margin-bottom: 22px;">
-            <h2 style="color: #0f172a; margin-top: 0; font-size: 18px;">Hello, ${recipient.name}!</h2>
+            <h2 style="color: #0f172a; margin-top: 0; font-size: 18px;">${greeting}</h2>
             <div style="color: #334155; font-size: 15px; line-height: 1.7; white-space: pre-wrap;">${message.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
           </div>
 
           <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 16px; margin-bottom: 22px; font-size: 13px;">
             <p style="margin: 0 0 4px 0; font-weight: bold; color: #0f172a;">Event Reference:</p>
-            <p style="margin: 0; color: #475569;">${event.title} · ${formattedDate} (${event.location})</p>
+            <p style="margin: 0; color: #475569;">${event.title} · ${formattedDate} (${event.location || "MEC Campus"})</p>
           </div>
 
           <div style="text-align: center; border-top: 1px solid #e2e8f0; padding-top: 18px; color: #94a3b8; font-size: 12px;">
@@ -1905,7 +1926,15 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
           </div>
         </div>
       `;
+    };
 
+    const bccEmailList = recipientList.map((r) => r.email).filter(Boolean);
+
+    // If only 1 recipient, send directly to them
+    if (recipientList.length === 1) {
+      const recipient = recipientList[0];
+      const singleGreeting = `Hello, ${recipient.name || "Participant"}!`;
+      const emailHtml = generateEmailHtml(singleGreeting, recipient.email);
       try {
         await sendEmail(recipient.email, `[${event.title}] ${subject}`, emailHtml);
         sentCount++;
@@ -1913,11 +1942,36 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
         console.error(`Failed to broadcast to ${recipient.email}:`, err);
         failedCount++;
       }
+    } else {
+      // Multiple recipients: send via BCC in chunks (max 50 per batch to respect SMTP limits)
+      const groupGreeting = getGroupGreeting(audience);
+      const emailHtml = generateEmailHtml(groupGreeting);
+      const BATCH_SIZE = 50;
 
-      // If user has a website account, also send in-app notification
-      if (recipient.userId) {
+      for (let i = 0; i < bccEmailList.length; i += BATCH_SIZE) {
+        const chunk = bccEmailList.slice(i, i + BATCH_SIZE);
+        try {
+          await sendEmail({
+            from: process.env.EMAIL_FROM,
+            to: process.env.EMAIL_FROM || "no-reply@meccomputerclub.org",
+            bcc: chunk,
+            subject: `[${event.title}] ${subject}`,
+            html: emailHtml,
+          });
+          sentCount += chunk.length;
+        } catch (err) {
+          console.error(`Failed to send BCC broadcast batch (size ${chunk.length}):`, err);
+          failedCount += chunk.length;
+        }
+      }
+    }
+
+    // In-app notifications for users with accounts
+    const inAppPromises = recipientList
+      .filter((r) => r.userId)
+      .map((r) =>
         createNotification({
-          recipient: recipient.userId as any,
+          recipient: r.userId as any,
           type: "announcement",
           title: `Update: ${event.title} 📢`,
           message: `${subject}: ${notificationSnippet}...`,
@@ -1925,16 +1979,40 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
           actionLabel: "View Event",
           priority: "normal",
           metadata: { eventId: event._id },
-        }).catch(() => {});
-      }
+        }).catch(() => {})
+      );
+
+    await Promise.allSettled(inAppPromises);
+
+    // Audit log
+    const actorUser = (req as any).user;
+    if (actorUser) {
+      AuditLog.create({
+        actorId: actorUser._id,
+        actorName: actorUser.fullName || actorUser.email,
+        actorRole: actorUser.role || "admin",
+        action: "BROADCAST_EMAIL",
+        targetType: "EVENT",
+        targetId: event._id?.toString(),
+        description: `Dispatched BCC broadcast email to ${sentCount} recipients for event "${event.title}" (Audience: ${audience}).`,
+        metadata: {
+          eventId: event._id,
+          audience,
+          subject,
+          sentCount,
+          failedCount,
+          deliveryMode: recipientList.length > 1 ? "BCC" : "DIRECT",
+        },
+      }).catch(() => {});
     }
 
     res.status(200).json({
       success: true,
-      message: `Broadcast dispatched! Successfully delivered to ${sentCount} recipient${sentCount === 1 ? "" : "s"}${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
+      message: `Broadcast dispatched! Successfully sent via ${recipientList.length > 1 ? "BCC" : "direct email"} to ${sentCount} recipient${sentCount === 1 ? "" : "s"}${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
       sentCount,
       failedCount,
       totalRecipients: recipientList.length,
+      deliveryMode: recipientList.length > 1 ? "BCC" : "DIRECT",
     });
   } catch (error) {
     next(error);
