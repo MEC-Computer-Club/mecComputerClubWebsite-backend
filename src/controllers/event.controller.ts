@@ -9,6 +9,7 @@ import { Certificate } from "../models/Certificate.model";
 import { Media } from "../models/Media.model";
 import { uploadToCloudinary, deleteFromCloudinary } from "../services/upload.service";
 import { sendEmail } from "../utils/sendEmail";
+import { getGlobalEmailBranding } from "../utils/generateEmailTemplate";
 import { createNotification, createBroadcastNotification } from "../services/notification.service";
 import crypto from "crypto";
 import AuditLog from "../models/AuditLog.model";
@@ -308,12 +309,16 @@ export const handleGetEventById = async (req: Request, res: Response) => {
     }
 
     const approvedCount = Array.isArray(data.approvedParticipants) ? data.approvedParticipants.length : 0;
-    const pendingCount = (Array.isArray(data.pendingParticipants) ? data.pendingParticipants.length : 0) + formPendingCount;
     const attendeesCount = Array.isArray(data.attendees) ? data.attendees.length : 0;
-    const directCount = approvedCount + pendingCount;
-    data.registeredCount = formSubs > 0 ? formSubs : (directCount > 0 ? directCount : attendeesCount);
     data.approvedCount = Math.max(approvedCount, attendeesCount);
-    data.pendingCount = pendingCount;
+    data.pendingCount = formPendingCount;
+    data.registeredCount = formSubs > 0 ? formSubs : Math.max(approvedCount, attendeesCount);
+    data.pendingParticipants = [];
+
+    // Purge legacy pendingParticipants from database if present so old stale records never linger
+    if (Array.isArray(event.pendingParticipants) && event.pendingParticipants.length > 0) {
+      Event.findByIdAndUpdate(event._id, { $set: { pendingParticipants: [] } }).catch(() => {});
+    }
 
     // Dynamically sync registration deadline from linked form if present
     let linkedFormDoc: any = null;
@@ -1363,7 +1368,7 @@ export const rejectParticipationClaim = async (req: Request, res: Response, next
 
 // ── Form Submissions & Bulk Approval for Events ─────────────────────────────
 
-const extractApplicantDetails = (responses: Record<string, any> = {}) => {
+export const extractApplicantDetails = (responses: Record<string, any> = {}) => {
   const email =
     responses?.contact_email_address ||
     responses?.email_address ||
@@ -1779,7 +1784,20 @@ export const bulkRejectFormSubmissions = async (req: Request, res: Response, nex
 export const sendEventBroadcast = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id: eventId } = req.params;
-    const { audience, subject, message, customEmails, isCustomHtml } = req.body;
+    const {
+      audience,
+      subject,
+      message,
+      customEmails,
+      isCustomHtml,
+      isFullTemplate,
+      bannerUrl,
+      attachments,
+      deliveryMethod = "bcc",
+      isTestSend = false,
+      testEmail,
+      ccEmails,
+    } = req.body;
 
     if (!subject?.trim() || !message?.trim()) {
       return res.status(400).json({ success: false, message: "Subject and message are required." });
@@ -1791,6 +1809,16 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
       .lean();
     if (!event) return res.status(404).json({ success: false, message: "Event not found" });
 
+    // Clean subject: ensure no redundant or automatic event title prefixes are prepended
+    let cleanSubject = subject.trim();
+    if (event.title) {
+      const escapedTitle = event.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      cleanSubject = cleanSubject.replace(new RegExp(`^\\[\\s*${escapedTitle}\\s*\\]\\s*`, "i"), "").trim();
+    }
+    if (!cleanSubject) {
+      cleanSubject = subject.trim();
+    }
+
     // Linked forms to gather form respondents
     const formIdSet = new Set<string>();
     if (event.linkedForm) formIdSet.add(event.linkedForm.toString());
@@ -1800,41 +1828,63 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
     const formsByEvent = await FormModel.find({ eventId: event._id }).select("_id").lean();
     formsByEvent.forEach((f: any) => formIdSet.add(f._id.toString()));
     const formIds = Array.from(formIdSet).map((id) => new mongoose.Types.ObjectId(id));
-
+    const forms = formIds.length > 0 ? await FormModel.find({ _id: { $in: formIds } }).lean() : [];
     const submissions = formIds.length > 0 ? await FormSubmissionModel.find({ formId: { $in: formIds } }).lean() : [];
 
-    // Map recipient email -> recipient Name
-    const recipientsMap = new Map<string, { email: string; name: string; userId?: string }>();
+    // Map recipient email -> recipient details (including custom form submission responses)
+    const recipientsMap = new Map<string, { email: string; name: string; userId?: string; responses?: Record<string, any> }>();
 
     // 1. Approved Participants
     const addApproved = () => {
       (event.approvedParticipants || []).forEach((p: any) => {
-        if (p.email) recipientsMap.set(p.email.toLowerCase(), { email: p.email, name: p.fullName, userId: p.userId?.toString() });
-      });
-      (event.attendees || []).forEach((a: any) => {
-        if (a?.email) recipientsMap.set(a.email.toLowerCase(), { email: a.email, name: a.fullName, userId: a._id?.toString() });
-      });
-    };
-
-    // 2. Pending Registrants
-    const addPending = () => {
-      submissions.forEach((sub: any) => {
-        const details = extractApplicantDetails(sub.responses);
-        if (details.email) {
-          recipientsMap.set(details.email.toLowerCase(), {
-            email: details.email,
-            name: details.fullName,
-            userId: sub.userId?.toString(),
+        if (p.email) {
+          const cleanEmail = p.email.toLowerCase();
+          const subMatch = submissions.find((s: any) => {
+            const d = extractApplicantDetails(s.responses);
+            return (d.email || "").toLowerCase() === cleanEmail;
+          });
+          recipientsMap.set(cleanEmail, {
+            email: p.email,
+            name: p.fullName,
+            userId: p.userId?.toString(),
+            responses: subMatch ? (subMatch.responses || {}) : {},
           });
         }
       });
-      (event.pendingParticipants || []).forEach((p: any) => {
-        if (p.leaderEmail) {
-          recipientsMap.set(p.leaderEmail.toLowerCase(), {
-            email: p.leaderEmail,
-            name: p.leaderName || p.teamName || "Participant",
-            userId: p.userId?.toString(),
+      (event.attendees || []).forEach((a: any) => {
+        if (a?.email) {
+          const cleanEmail = a.email.toLowerCase();
+          const subMatch = submissions.find((s: any) => {
+            const d = extractApplicantDetails(s.responses);
+            return (d.email || "").toLowerCase() === cleanEmail;
           });
+          recipientsMap.set(cleanEmail, {
+            email: a.email,
+            name: a.fullName,
+            userId: a._id?.toString(),
+            responses: subMatch ? (subMatch.responses || {}) : {},
+          });
+        }
+      });
+    };
+
+    // 2. Pending Registrants (Derived strictly from pending form responses)
+    const addPending = () => {
+      const approvedEmails = new Set(
+        (event.approvedParticipants || []).map((p: any) => (p.email || "").toLowerCase()).filter(Boolean)
+      );
+      submissions.forEach((sub: any) => {
+        if (sub.status !== "approved" && sub.status !== "rejected") {
+          const details = extractApplicantDetails(sub.responses);
+          const email = (details.email || "").toLowerCase();
+          if (email && !approvedEmails.has(email)) {
+            recipientsMap.set(email, {
+              email: details.email,
+              name: details.fullName || "Applicant",
+              userId: sub.userId?.toString(),
+              responses: sub.responses || {},
+            });
+          }
         }
       });
     };
@@ -1844,7 +1894,7 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
       (event.contributors || []).forEach((c: any) => {
         const email = c.email || (c.userId as any)?.email;
         const name = c.name || (c.userId as any)?.fullName || "Team Member";
-        if (email) recipientsMap.set(email.toLowerCase(), { email, name, userId: (c.userId as any)?._id?.toString() });
+        if (email) recipientsMap.set(email.toLowerCase(), { email, name, userId: (c.userId as any)?._id?.toString(), responses: {} });
       });
     };
 
@@ -1871,7 +1921,23 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
     } else if (audience === "custom" && Array.isArray(customEmails)) {
       customEmails.forEach((email: string) => {
         if (email && email.includes("@")) {
-          recipientsMap.set(email.toLowerCase(), { email: email.trim(), name: "Valued Stakeholder" });
+          const cleanEmail = email.trim().toLowerCase();
+          let matchedName = "Participant";
+          let matchedResponses: Record<string, any> = {};
+          const subMatch = submissions.find((s: any) => {
+            const d = extractApplicantDetails(s.responses);
+            return d.email && d.email.toLowerCase() === cleanEmail;
+          });
+          if (subMatch) {
+            matchedName = extractApplicantDetails(subMatch.responses).fullName || "Participant";
+            matchedResponses = subMatch.responses || {};
+          } else {
+            const userMatch = (event.approvedParticipants || []).find(
+              (p: any) => p.email && p.email.toLowerCase() === cleanEmail
+            );
+            if (userMatch) matchedName = userMatch.fullName;
+          }
+          recipientsMap.set(cleanEmail, { email: email.trim(), name: matchedName, responses: matchedResponses });
         }
       });
     }
@@ -1892,10 +1958,6 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
     let sentCount = 0;
     let failedCount = 0;
 
-    const notificationSnippet = isCustomHtml
-      ? message.replace(/<[^>]*>?/gm, " ").replace(/\s+/g, " ").trim().slice(0, 100)
-      : message.slice(0, 100);
-
     // Determine appropriate greeting based on audience and recipient count
     const getGroupGreeting = (aud: string): string => {
       switch (aud) {
@@ -1914,95 +1976,565 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
       }
     };
 
-    const generateEmailHtml = (greeting: string, recipientEmail = ""): string => {
-      if (isCustomHtml) {
-        return message
-          .replace(/{{\s*userName\s*}}/g, recipientList.length === 1 ? recipientList[0].name : "Participant")
-          .replace(/{{\s*email\s*}}/g, recipientEmail);
+    // Unified token substitution engine for message body AND subject line
+    const substituteTokens = (
+      rawText: string,
+      recipientName = "",
+      recipientEmail = "",
+      recipientResponses: Record<string, any> = {}
+    ): string => {
+      if (!rawText) return "";
+      const effectiveName =
+        recipientName || (recipientList.length === 1 ? recipientList[0].name : "") || "Participant";
+      const effectiveEmail =
+        recipientEmail || (recipientList.length === 1 ? recipientList[0].email : "") || "";
+      const effectiveResponses =
+        recipientResponses && Object.keys(recipientResponses).length > 0
+          ? recipientResponses
+          : recipientList.length === 1 && recipientList[0].responses
+          ? recipientList[0].responses
+          : {};
+
+      const branding = getGlobalEmailBranding();
+
+      // 1. Process base standard tokens
+      let text = rawText
+        .replace(/{{\s*greeting\s*}}/g, `Hello, ${effectiveName}!`)
+        .replace(/{{\s*userName\s*}}/g, effectiveName)
+        .replace(/{{\s*name\s*}}/g, effectiveName)
+        .replace(/{{\s*email\s*}}/g, effectiveEmail)
+        .replace(/{{\s*eventName\s*}}/g, event.title)
+        .replace(/{{\s*eventDate\s*}}/g, formattedDate)
+        .replace(/{{\s*eventVenue\s*}}/g, event.location || "MEC Campus")
+        .replace(/{{\s*clubName\s*}}/g, branding.clubName);
+
+      // 2. Generic Dynamic Form Fields Substitution
+      // Replaces ANY field submitted in the form (e.g. {{session}}, {{pubg ID}}, {{pubg_id}}, {{t_shirt_size}}, etc.)
+      if (effectiveResponses && typeof effectiveResponses === "object") {
+        const normalizedResponsesMap = new Map<string, string>();
+        for (const [key, val] of Object.entries(effectiveResponses)) {
+          if (val === undefined || val === null) continue;
+          const strVal = typeof val === "object" ? JSON.stringify(val) : String(val);
+          normalizedResponsesMap.set(key.toLowerCase(), strVal);
+          const cleanKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (cleanKey) {
+            normalizedResponsesMap.set(cleanKey, strVal);
+          }
+        }
+
+        // Map form field labels to response keys if forms catalog exists
+        if (Array.isArray(forms)) {
+          forms.forEach((f: any) => {
+            if (Array.isArray(f.fields)) {
+              f.fields.forEach((fld: any) => {
+                if (fld.name && fld.label && effectiveResponses[fld.name] !== undefined) {
+                  const strVal = String(effectiveResponses[fld.name] ?? "");
+                  normalizedResponsesMap.set(fld.label.toLowerCase(), strVal);
+                  const cleanLabel = fld.label.toLowerCase().replace(/[^a-z0-9]/g, "");
+                  if (cleanLabel) normalizedResponsesMap.set(cleanLabel, strVal);
+                }
+              });
+            }
+          });
+        }
+
+        text = text.replace(/{{\s*([^{}]+?)\s*}}/g, (match: string, rawKey: string) => {
+          const trimmed = rawKey.trim();
+          const lower = trimmed.toLowerCase();
+          const clean = lower.replace(/[^a-z0-9]/g, "");
+
+          if (normalizedResponsesMap.has(lower)) {
+            return normalizedResponsesMap.get(lower)!;
+          }
+          if (clean && normalizedResponsesMap.has(clean)) {
+            return normalizedResponsesMap.get(clean)!;
+          }
+
+          if (clean === "fullname" || clean === "name" || clean === "username") return effectiveName;
+          if (clean === "email" || clean === "emailaddress" || clean === "contactemail") return effectiveEmail;
+
+          return match;
+        });
       }
 
-      return `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 28px; border: 2px solid #000; border-radius: 12px; background: #ffffff; color: #1e293b;">
-          <div style="text-align: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 18px; margin-bottom: 22px;">
-            <h1 style="color: #0f172a; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">MEC COMPUTER CLUB</h1>
-            <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px; font-weight: 600; text-transform: uppercase;">Event Announcement • ${event.title}</p>
-          </div>
-
-          <div style="margin-bottom: 22px;">
-            <h2 style="color: #0f172a; margin-top: 0; font-size: 18px;">${greeting}</h2>
-            <div style="color: #334155; font-size: 15px; line-height: 1.7; white-space: pre-wrap;">${message.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
-          </div>
-
-          <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 16px; margin-bottom: 22px; font-size: 13px;">
-            <p style="margin: 0 0 4px 0; font-weight: bold; color: #0f172a;">Event Reference:</p>
-            <p style="margin: 0; color: #475569;">${event.title} · ${formattedDate} (${event.location || "MEC Campus"})</p>
-          </div>
-
-          <div style="text-align: center; border-top: 1px solid #e2e8f0; padding-top: 18px; color: #94a3b8; font-size: 12px;">
-            <p style="margin: 0;">MEC Computer Club • Official Broadcast</p>
-          </div>
-        </div>
-      `;
+      return text;
     };
+
+    const generateEmailHtml = (
+      greeting: string,
+      recipientEmail = "",
+      recipientName = "",
+      recipientResponses: Record<string, any> = {}
+    ): string => {
+      const branding = getGlobalEmailBranding();
+      const processedMessage = substituteTokens(message, recipientName, recipientEmail, recipientResponses);
+
+      if (isCustomHtml) {
+        return processedMessage;
+      }
+      // Use specified bannerUrl if provided; otherwise fallback to global branding
+      const chosenBanner = bannerUrl !== undefined ? bannerUrl : branding.bannerUrl;
+
+      // Format attachments & links blocks if any exist
+      let attachmentsBlock = "";
+      if (Array.isArray(attachments) && attachments.length > 0) {
+        const directFiles = attachments.filter((att: any) => att && att.content);
+        const externalLinks = attachments.filter((att: any) => att && !att.content && att.url);
+
+        let filesHtml = "";
+        if (directFiles.length > 0) {
+          const rows = directFiles
+            .map((att: any) => {
+              const sizeStr = att.size
+                ? ` <span style="font-size: 11px; color: #64748b; font-weight: normal;">(${(att.size / 1024).toFixed(1)} KB)</span>`
+                : "";
+              return `<tr>
+                <td style="padding: 9px 0; border-bottom: 1px solid #edf2f7; font-size: 13px;">
+                  <span style="font-size: 14px; margin-right: 6px;">📄</span>
+                  <span style="color: #002e5b; font-weight: 600;">${att.name || "Attachment"}</span>${sizeStr}
+                </td>
+                <td align="right" style="padding: 9px 0; border-bottom: 1px solid #edf2f7; color: #166534; font-size: 11px; font-weight: 700;">
+                  Attached Directly 📎
+                </td>
+              </tr>`;
+            })
+            .join("");
+
+          filesHtml = `
+            <div class="email-box-card" style="margin: 20px 0 16px; padding: 16px 18px; background-color: #f0fdf4; border: 1.5px solid #bbf7d0; border-radius: 10px;">
+              <p style="margin: 0 0 8px; font-weight: 700; color: #166534; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
+                📎 Attached Documents (${directFiles.length})
+              </p>
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                ${rows}
+              </table>
+              <p style="margin: 8px 0 0; font-size: 11px; color: #15803d; line-height: 1.4;">
+                Files are attached directly to this email message. You can preview or download them using your email app.
+              </p>
+            </div>
+          `;
+        }
+
+        let linksHtml = "";
+        if (externalLinks.length > 0) {
+          const rows = externalLinks
+            .map((att: any) => {
+              return `<tr>
+                <td style="padding: 9px 0; border-bottom: 1px solid #e0e7ff; font-size: 13px;">
+                  <span style="font-size: 14px; margin-right: 6px;">🔗</span>
+                  <a href="${att.url}" target="_blank" style="color: #1e40af; font-weight: 600; text-decoration: none;">
+                    ${att.name || "External Resource"}
+                  </a>
+                </td>
+                <td align="right" style="padding: 9px 0; border-bottom: 1px solid #e0e7ff;">
+                  <a href="${att.url}" target="_blank" style="display: inline-block; padding: 5px 12px; background: #1e40af; color: #ffffff !important; border-radius: 6px; font-size: 11px; font-weight: 700; text-decoration: none;">
+                    Open Link &rarr;
+                  </a>
+                </td>
+              </tr>`;
+            })
+            .join("");
+
+          linksHtml = `
+            <div class="email-box-card" style="margin: 16px 0 20px; padding: 16px 18px; background-color: #eef2ff; border: 1.5px solid #c7d2fe; border-radius: 10px;">
+              <p style="margin: 0 0 8px; font-weight: 700; color: #3730a3; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
+                🔗 Resource &amp; Reference Links (${externalLinks.length})
+              </p>
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                ${rows}
+              </table>
+            </div>
+          `;
+        }
+
+        attachmentsBlock = filesHtml + linksHtml;
+      }
+
+      const bannerImg = chosenBanner
+        ? `<table border="0" cellpadding="0" cellspacing="0" width="100%"><tr><td width="100%"><img src="${chosenBanner}" alt="${branding.clubName}" class="email-banner-img" style="width: 100%; max-width: 600px; height: auto; display: block; border-radius: 12px 12px 0 0;" /></td></tr></table>`
+        : "";
+
+      // Check if processedMessage already provides its own header/greeting/card/signoff (e.g. from the WYSIWYG studio canvas)
+      const hasHeadingOrGreeting =
+        Boolean(isFullTemplate) ||
+        /<(h[1-3])[^>]*>/i.test(processedMessage) ||
+        /email-title|header-text/i.test(processedMessage) ||
+        /^\s*<p[^>]*>\s*(Hello|Dear|Hi|Greetings)/i.test(processedMessage);
+
+      const hasReferenceCard =
+        Boolean(isFullTemplate) ||
+        /email-box-card/i.test(processedMessage) ||
+        /Event Reference/i.test(processedMessage);
+
+      const hasSignoff =
+        Boolean(isFullTemplate) ||
+        /email-signoff/i.test(processedMessage) ||
+        /Best regards|Warm regards|Sincerely/i.test(processedMessage);
+
+      let bodyHtml = /<[a-z][\s\S]*>/i.test(processedMessage)
+        ? processedMessage
+        : processedMessage.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+
+      // Attachments placement: insert right above the sign-off if sign-off exists, otherwise append
+      if (attachmentsBlock) {
+        if (bodyHtml.includes('class="email-signoff"')) {
+          bodyHtml = bodyHtml.replace('class="email-signoff"', `${attachmentsBlock}\n<div class="email-signoff"`);
+        } else {
+          bodyHtml += attachmentsBlock;
+        }
+      }
+
+      const headerHtml = hasHeadingOrGreeting
+        ? ""
+        : `<h1 class="email-title-h1" style="margin: 0 0 16px; font-size: 24px; font-weight: 700; color: #002e5b; font-family: 'Inter', -apple-system, sans-serif; letter-spacing: -0.3px; line-height: 1.3;">
+            ${event.title}
+          </h1>
+          <p style="margin: 0 0 18px; font-size: 16px; font-weight: 600; color: #002e5b;">
+            ${greeting}
+          </p>`;
+
+      const referenceCardHtml = hasReferenceCard
+        ? ""
+        : `<div class="email-box-card" style="margin: 20px 0; padding: 16px 18px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;">
+            <p style="margin: 0 0 8px; font-weight: 700; color: #002e5b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
+              Event Reference &amp; Schedule
+            </p>
+            <p style="margin: 0 0 4px; font-size: 14px; font-weight: 700; color: #0f172a;">${event.title}</p>
+            <p style="margin: 0 0 4px; font-size: 13px; color: #475569;">📅 <strong>Date:</strong> ${formattedDate} ${event.eventTime ? `• ${event.eventTime}` : ""}</p>
+            <p style="margin: 0 0 4px; font-size: 13px; color: #475569;">📍 <strong>Venue:</strong> ${event.location || "MEC Campus"}</p>
+            ${event.onlineLink ? `<p style="margin: 6px 0 0; font-size: 13px; color: #002e5b;"><a href="${event.onlineLink}" target="_blank" style="color: #002e5b; font-weight: 600; text-decoration: underline;">🔗 Join Virtual Session</a></p>` : ""}
+          </div>`;
+
+      const signoffHtml = hasSignoff
+        ? ""
+        : `<div style="margin-top: 28px; padding-top: 20px; border-top: 1px solid #f1f5f9; font-size: 14px; color: #64748b;">
+            <p style="margin: 0 0 4px;">Best regards,</p>
+            <p style="margin: 0; font-weight: 700; color: #002e5b;">${branding.clubName} Executive Team</p>
+          </div>`;
+
+      return `<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="x-apple-disable-message-reformatting" />
+  <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
+  <title>${cleanSubject}</title>
+  <style type="text/css">
+    /* Global Resets */
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      -webkit-text-size-adjust: 100% !important;
+      -ms-text-size-adjust: 100% !important;
+    }
+    table, td {
+      mso-table-lspace: 0pt !important;
+      mso-table-rspace: 0pt !important;
+      border-collapse: collapse !important;
+    }
+    img {
+      border: 0;
+      height: auto;
+      line-height: 100%;
+      outline: none;
+      text-decoration: none;
+      -ms-interpolation-mode: bicubic;
+    }
+
+    /* Mobile Responsive Styles */
+    @media only screen and (max-width: 600px) {
+      .email-body-wrapper {
+        padding: 12px 6px !important;
+        background-color: #f3f4f6 !important;
+      }
+      .email-outer-td {
+        padding: 0 4px !important;
+      }
+      .email-container-table {
+        width: 100% !important;
+        max-width: 100% !important;
+        border-radius: 12px !important;
+        border: 1px solid #e5e7eb !important;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06) !important;
+        overflow: hidden !important;
+        background-color: #ffffff !important;
+      }
+      .email-banner-img {
+        border-radius: 12px 12px 0 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        height: auto !important;
+        display: block !important;
+      }
+      .email-content-cell {
+        padding: 16px 12px 20px !important;
+      }
+      .email-title-h1 {
+        font-size: 20px !important;
+        line-height: 1.35 !important;
+        margin-bottom: 10px !important;
+      }
+      .email-box-card {
+        padding: 10px 12px !important;
+        margin: 14px 0 !important;
+      }
+      .email-footer-cell {
+        padding: 18px 14px 24px !important;
+      }
+    }
+  </style>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f3f4f6; margin: 0; padding: 0; color: #1e293b; width: 100% !important;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" class="email-body-wrapper" style="background-color: #f3f4f6; margin: 0; padding: 16px 0; width: 100%;">
+    <tr>
+      <td align="center" class="email-outer-td" style="padding: 0 4px;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" class="email-container-table" style="max-width: 600px; width: 100%; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08); overflow: hidden; border: 1px solid #e5e7eb;">
+          ${bannerImg}
+          <tr>
+            <td class="email-content-cell" style="padding: 24px 20px 28px;">
+              ${headerHtml}
+
+              <div style="font-size: 15px; line-height: 1.65; color: #4b5563; margin-bottom: 24px;">
+                ${bodyHtml}
+              </div>
+
+              ${referenceCardHtml}
+
+              ${signoffHtml}
+            </td>
+          </tr>
+
+          <!-- Footer Cell -->
+          <tr>
+            <td align="center" class="email-footer-cell" style="padding: 20px 16px 26px; background-color: #fafafa; border-top: 1px solid #edf2f7; text-align: center;">
+              <p style="margin: 0 0 8px; font-size: 12px; color: #9ca3af; line-height: 1.5;">
+                &copy; ${new Date().getFullYear()} ${branding.clubName}.
+                <br />
+                ${branding.footerAddress}
+                ${branding.footerNote ? `<br /><span style="font-size: 11px; color: #b0b0b0; display: inline-block; margin-top: 4px;">${branding.footerNote}</span>` : ""}
+              </p>
+              <div style="margin-top: 10px;">
+                <a href="${branding.websiteUrl}" target="_blank" style="color: #002e5b; text-decoration: none; font-size: 12px; margin: 0 10px; font-weight: 600;">Website</a>
+                <span style="color: #cbd5e1;">|</span>
+                <a href="${branding.contactUrl}" target="_blank" style="color: #002e5b; text-decoration: none; font-size: 12px; margin: 0 10px; font-weight: 600;">Support &amp; Contact</a>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+    };
+
+    // Strictly resolve direct base64 file attachments for Nodemailer.
+    // URL links are NEVER fetched as file attachments - they belong exclusively in the email body!
+    let mailAttachments: { filename: string; content: Buffer; contentType?: string }[] | undefined;
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      const resolvedList: { filename: string; content: Buffer; contentType?: string }[] = [];
+
+      for (const att of attachments) {
+        if (!att || !att.content) continue; // Only attach files with actual content
+
+        try {
+          const rawBase64 = att.content.includes(",")
+            ? att.content.split(",")[1]
+            : att.content;
+          resolvedList.push({
+            filename: att.name || "attachment",
+            content: Buffer.from(rawBase64, "base64"),
+            contentType: att.mimeType,
+          });
+        } catch (err) {
+          console.error(`Failed to buffer base64 attachment "${att.name}":`, err);
+        }
+      }
+
+      if (resolvedList.length > 0) {
+        mailAttachments = resolvedList;
+      }
+    }
+
+    // Sanitize CC emails if provided
+    const sanitizedCcList: string[] = Array.isArray(ccEmails)
+      ? ccEmails.map((e: any) => String(e).trim()).filter((e: string) => e.includes("@"))
+      : typeof ccEmails === "string"
+      ? ccEmails.split(/[\n,;]+/).map((e: string) => e.trim()).filter((e: string) => e.includes("@"))
+      : [];
+
+    // 0. Handle Test Send Option
+    if (isTestSend && testEmail && testEmail.includes("@")) {
+      const singleGreeting = "Hello Administrator (Test Copy)!";
+      const adminName = (req as any).user?.fullName || "Administrator";
+      const sampleResponses: Record<string, any> =
+        submissions.length > 0 && submissions[0].responses
+          ? submissions[0].responses
+          : { session: "2021-22", pubg_id: "5123984124" };
+      const emailHtml = generateEmailHtml(singleGreeting, testEmail.trim(), adminName, sampleResponses);
+      const testSubject = cleanSubject.startsWith("[TEST COPY]")
+        ? cleanSubject
+        : `[TEST COPY] ${cleanSubject}`;
+      const substitutedTestSubject = substituteTokens(testSubject, adminName, testEmail.trim(), sampleResponses);
+      try {
+        await sendEmail({
+          to: testEmail.trim(),
+          cc: sanitizedCcList.length > 0 ? sanitizedCcList : undefined,
+          subject: substitutedTestSubject,
+          html: emailHtml,
+          attachments: mailAttachments,
+        });
+        return res.status(200).json({
+          success: true,
+          message: `Test email successfully dispatched to ${testEmail}${sanitizedCcList.length > 0 ? ` (CC: ${sanitizedCcList.join(", ")})` : ""}!`,
+        });
+      } catch (err: any) {
+        console.error(`Failed to send test email to ${testEmail}:`, err);
+        return res.status(500).json({
+          success: false,
+          message: `Failed to send test email: ${err.message || "SMTP error"}`,
+        });
+      }
+    }
 
     const bccEmailList = recipientList.map((r) => r.email).filter(Boolean);
 
-    // If only 1 recipient, send directly to them
-    if (recipientList.length === 1) {
-      const recipient = recipientList[0];
-      const singleGreeting = `Hello, ${recipient.name || "Participant"}!`;
-      const emailHtml = generateEmailHtml(singleGreeting, recipient.email);
-      try {
-        await sendEmail(recipient.email, `[${event.title}] ${subject}`, emailHtml);
-        sentCount++;
-      } catch (err) {
-        console.error(`Failed to broadcast to ${recipient.email}:`, err);
-        failedCount++;
+    // 1. Individual Personalized Dispatch
+    if (deliveryMethod === "individual") {
+      for (const recipient of recipientList) {
+        const singleGreeting = `Hello, ${recipient.name || "Participant"}!`;
+        const emailHtml = generateEmailHtml(singleGreeting, recipient.email, recipient.name, recipient.responses || {});
+        const perRecipientSubject = substituteTokens(cleanSubject, recipient.name, recipient.email, recipient.responses || {});
+        try {
+          await sendEmail({
+            to: recipient.email,
+            subject: perRecipientSubject,
+            html: emailHtml,
+            attachments: mailAttachments,
+          });
+          sentCount++;
+        } catch (err) {
+          console.error(`Failed to dispatch personalized email to ${recipient.email}:`, err);
+          failedCount++;
+        }
       }
-    } else {
-      // Multiple recipients: send via BCC in chunks (max 50 per batch to respect SMTP limits)
-      const groupGreeting = getGroupGreeting(audience);
-      const emailHtml = generateEmailHtml(groupGreeting);
-      const BATCH_SIZE = 50;
 
-      for (let i = 0; i < bccEmailList.length; i += BATCH_SIZE) {
-        const chunk = bccEmailList.slice(i, i + BATCH_SIZE);
+      // If CC recipients exist, send one clean broadcast copy to CC
+      if (sanitizedCcList.length > 0) {
+        const groupGreeting = getGroupGreeting(audience);
+        const emailHtml = generateEmailHtml(groupGreeting);
         try {
           await sendEmail({
             from: process.env.EMAIL_FROM,
             to: process.env.EMAIL_FROM || "no-reply@meccomputerclub.org",
-            bcc: chunk,
-            subject: `[${event.title}] ${subject}`,
+            cc: sanitizedCcList,
+            subject: cleanSubject,
             html: emailHtml,
+            attachments: mailAttachments,
           });
-          sentCount += chunk.length;
         } catch (err) {
-          console.error(`Failed to send BCC broadcast batch (size ${chunk.length}):`, err);
-          failedCount += chunk.length;
+          console.error("Failed to dispatch CC broadcast copy in individual mode:", err);
+        }
+      }
+    } else if (deliveryMethod === "cc") {
+      // 2. CC Batch Broadcast (Recipients visible to each other in CC)
+      if (recipientList.length === 1) {
+        const recipient = recipientList[0];
+        const singleGreeting = `Hello, ${recipient.name || "Participant"}!`;
+        const emailHtml = generateEmailHtml(singleGreeting, recipient.email, recipient.name, recipient.responses || {});
+        const perRecipientSubject = substituteTokens(cleanSubject, recipient.name, recipient.email, recipient.responses || {});
+        const combinedCc = Array.from(new Set([...sanitizedCcList]));
+        try {
+          await sendEmail({
+            to: recipient.email,
+            cc: combinedCc.length > 0 ? combinedCc : undefined,
+            subject: perRecipientSubject,
+            html: emailHtml,
+            attachments: mailAttachments,
+          });
+          sentCount++;
+        } catch (err) {
+          console.error(`Failed to broadcast to ${recipient.email}:`, err);
+          failedCount++;
+        }
+      } else {
+        const groupGreeting = getGroupGreeting(audience);
+        const emailHtml = generateEmailHtml(groupGreeting);
+        const BATCH_SIZE = 50;
+
+        for (let i = 0; i < bccEmailList.length; i += BATCH_SIZE) {
+          const chunk = bccEmailList.slice(i, i + BATCH_SIZE);
+          const combinedCc = Array.from(new Set([...chunk, ...sanitizedCcList]));
+          try {
+            await sendEmail({
+              from: process.env.EMAIL_FROM,
+              to: process.env.EMAIL_FROM || "no-reply@meccomputerclub.org",
+              cc: combinedCc,
+              subject: cleanSubject,
+              html: emailHtml,
+              attachments: mailAttachments,
+            });
+            sentCount += chunk.length;
+          } catch (err) {
+            console.error(`Failed to send CC broadcast batch (size ${chunk.length}):`, err);
+            failedCount += chunk.length;
+          }
+        }
+      }
+    } else {
+      // 3. Default: BCC Batch Broadcast (Recipients private in BCC)
+      if (recipientList.length === 1) {
+        const recipient = recipientList[0];
+        const singleGreeting = `Hello, ${recipient.name || "Participant"}!`;
+        const emailHtml = generateEmailHtml(singleGreeting, recipient.email, recipient.name, recipient.responses || {});
+        const perRecipientSubject = substituteTokens(cleanSubject, recipient.name, recipient.email, recipient.responses || {});
+        try {
+          await sendEmail({
+            to: recipient.email,
+            cc: sanitizedCcList.length > 0 ? sanitizedCcList : undefined,
+            subject: perRecipientSubject,
+            html: emailHtml,
+            attachments: mailAttachments,
+          });
+          sentCount++;
+        } catch (err) {
+          console.error(`Failed to broadcast to ${recipient.email}:`, err);
+          failedCount++;
+        }
+      } else {
+        const groupGreeting = getGroupGreeting(audience);
+        const emailHtml = generateEmailHtml(groupGreeting);
+        const BATCH_SIZE = 50;
+
+        for (let i = 0; i < bccEmailList.length; i += BATCH_SIZE) {
+          const chunk = bccEmailList.slice(i, i + BATCH_SIZE);
+          try {
+            await sendEmail({
+              from: process.env.EMAIL_FROM,
+              to: process.env.EMAIL_FROM || "no-reply@meccomputerclub.org",
+              bcc: chunk,
+              cc: i === 0 && sanitizedCcList.length > 0 ? sanitizedCcList : undefined,
+              subject: cleanSubject,
+              html: emailHtml,
+              attachments: mailAttachments,
+            });
+            sentCount += chunk.length;
+          } catch (err) {
+            console.error(`Failed to send BCC broadcast batch (size ${chunk.length}):`, err);
+            failedCount += chunk.length;
+          }
         }
       }
     }
 
-    // In-app notifications for users with accounts
-    const inAppPromises = recipientList
-      .filter((r) => r.userId)
-      .map((r) =>
-        createNotification({
-          recipient: r.userId as any,
-          type: "announcement",
-          title: `Update: ${event.title} 📢`,
-          message: `${subject}: ${notificationSnippet}...`,
-          link: `/events/${event.slug || event._id}`,
-          actionLabel: "View Event",
-          priority: "normal",
-          metadata: { eventId: event._id },
-        }).catch(() => {})
-      );
-
-    await Promise.allSettled(inAppPromises);
 
     // Audit log
     const actorUser = (req as any).user;
+    const modeLabel = deliveryMethod === "individual" ? "DIRECT" : deliveryMethod === "cc" ? "CC" : "BCC";
     if (actorUser) {
       AuditLog.create({
         actorId: actorUser._id,
@@ -2011,25 +2543,149 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
         action: "BROADCAST_EMAIL",
         targetType: "EVENT",
         targetId: event._id?.toString(),
-        description: `Dispatched BCC broadcast email to ${sentCount} recipients for event "${event.title}" (Audience: ${audience}).`,
+        description: `Dispatched ${modeLabel} broadcast email to ${sentCount} recipients for event "${event.title}" (Audience: ${audience})${sanitizedCcList.length > 0 ? ` with ${sanitizedCcList.length} CC recipient(s)` : ""}.`,
         metadata: {
           eventId: event._id,
           audience,
-          subject,
+          subject: cleanSubject,
           sentCount,
           failedCount,
-          deliveryMode: recipientList.length > 1 ? "BCC" : "DIRECT",
+          ccCount: sanitizedCcList.length,
+          deliveryMode: modeLabel,
         },
       }).catch(() => {});
     }
 
     res.status(200).json({
       success: true,
-      message: `Broadcast dispatched! Successfully sent via ${recipientList.length > 1 ? "BCC" : "direct email"} to ${sentCount} recipient${sentCount === 1 ? "" : "s"}${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
+      message: `Broadcast dispatched! Successfully sent via ${modeLabel} to ${sentCount} recipient${sentCount === 1 ? "" : "s"}${sanitizedCcList.length > 0 ? ` (+${sanitizedCcList.length} CC)` : ""}${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
       sentCount,
       failedCount,
+      ccCount: sanitizedCcList.length,
       totalRecipients: recipientList.length,
-      deliveryMode: recipientList.length > 1 ? "BCC" : "DIRECT",
+      deliveryMode: modeLabel,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc Get all saved custom email templates for a specific event
+ * @route GET /api/events/:id/email-templates
+ */
+export const getEventSavedEmailTemplates = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const event = await Event.findById(id).select("savedEmailTemplates title").lean();
+    if (!event) {
+      return res.status(404).json({ success: false, message: "Event not found" });
+    }
+    return res.status(200).json({
+      success: true,
+      data: (event as any).savedEmailTemplates || [],
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc Save or update an event-specific custom email template
+ * @route POST /api/events/:id/email-templates
+ */
+export const saveEventEmailTemplate = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const { templateId, name, subject, body, isHtml, audience, bannerUrl, attachments } = req.body;
+
+    if (!name?.trim() || !subject?.trim() || !body?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Template name, subject, and content are required.",
+      });
+    }
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({ success: false, message: "Event not found" });
+    }
+
+    if (!event.savedEmailTemplates) {
+      event.savedEmailTemplates = [];
+    }
+
+    let savedItem: any = null;
+
+    if (templateId) {
+      const existing = (event.savedEmailTemplates as any).id(templateId);
+      if (existing) {
+        existing.name = name.trim();
+        existing.subject = subject.trim();
+        existing.body = body;
+        existing.isHtml = Boolean(isHtml);
+        existing.audience = audience || "approved_participants";
+        if (bannerUrl !== undefined) existing.bannerUrl = bannerUrl;
+        if (Array.isArray(attachments)) existing.attachments = attachments;
+        existing.updatedAt = new Date();
+        savedItem = existing;
+      }
+    }
+
+    if (!savedItem) {
+      const newTemplate = {
+        name: name.trim(),
+        subject: subject.trim(),
+        body,
+        isHtml: Boolean(isHtml),
+        audience: audience || "approved_participants",
+        bannerUrl: bannerUrl || "",
+        attachments: Array.isArray(attachments) ? attachments : [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      event.savedEmailTemplates.push(newTemplate as any);
+      savedItem = event.savedEmailTemplates[event.savedEmailTemplates.length - 1];
+    }
+
+    await event.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Template "${savedItem.name}" saved to event details!`,
+      data: savedItem,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc Delete a saved email template from an event
+ * @route DELETE /api/events/:id/email-templates/:templateId
+ */
+export const deleteEventSavedEmailTemplate = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id, templateId } = req.params;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({ success: false, message: "Event not found" });
+    }
+
+    if (!event.savedEmailTemplates) {
+      return res.status(404).json({ success: false, message: "Template not found" });
+    }
+
+    event.savedEmailTemplates = (event.savedEmailTemplates as any).filter(
+      (t: any) => t._id?.toString() !== templateId
+    );
+
+    await event.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Event email template removed successfully.",
     });
   } catch (error) {
     next(error);

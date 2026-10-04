@@ -5,6 +5,7 @@ import FormSubmissionModel from "../models/FormSubmission.model";
 import UserModel from "../models/User.model";
 import { deleteFromCloudinary } from "../services/upload.service";
 import AppError from "../utils/AppError";
+import { extractApplicantDetails } from "./event.controller";
 
 declare global {
   namespace Express {
@@ -93,89 +94,27 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
       responses,
     });
 
-    // If form is associated with an event, register into event.pendingParticipants
+    // Ensure form is linked to event if form is associated with an event
     if (form.eventId) {
       try {
         const { Event } = await import("../models/Event.model");
         const event = await Event.findById(form.eventId);
         if (event) {
-          const leaderName =
-            responses?.full_name ||
-            responses?.fullName ||
-            responses?.name ||
-            responses?.leader_name ||
-            responses?.captain_name ||
-            responses?.applicant_name ||
-            req?.user?.fullName ||
-            "Participant";
-          const leaderEmail =
-            responses?.email_address ||
-            responses?.email ||
-            responses?.contact_email ||
-            req?.user?.email ||
-            "";
-          const leaderPhone =
-            responses?.phone ||
-            responses?.phone_number ||
-            responses?.contact_phone ||
-            responses?.mobile ||
-            "";
-          const leaderStudentId =
-            responses?.student_id ||
-            responses?.studentId ||
-            responses?.id_number ||
-            "";
-          const teamName =
-            responses?.team_name ||
-            responses?.teamName ||
-            responses?.squad_name ||
-            undefined;
-          const inGameId =
-            responses?.in_game_id ||
-            responses?.inGameId ||
-            responses?.uid ||
-            undefined;
-
-          // Parse members if any (e.g. member_2_name, player_2, etc.)
-          const members: any[] = [];
-          for (let i = 2; i <= 10; i++) {
-            const mName = responses?.[`member_${i}_name`] || responses?.[`player_${i}_name`];
-            if (mName) {
-              members.push({
-                fullName: mName,
-                studentId: responses?.[`member_${i}_id`] || responses?.[`player_${i}_id`] || "",
-                inGameId: responses?.[`member_${i}_uid`] || responses?.[`player_${i}_uid`] || "",
-                email: responses?.[`member_${i}_email`] || "",
-                phone: responses?.[`member_${i}_phone`] || "",
-              });
-            }
-          }
-
-          event.pendingParticipants.push({
-            userId: req?.user?._id as any,
-            teamName,
-            leaderName,
-            leaderEmail,
-            leaderPhone,
-            leaderStudentId,
-            inGameId,
-            members,
-            registeredAt: new Date(),
-            formData: responses,
-          });
-
-          // Ensure form is linked to event
-          if (!event.forms.some((f) => f.toString() === formId)) {
+          let needsSave = false;
+          if (!event.forms.some((f) => f.toString() === form._id.toString())) {
             event.forms.push(form._id as any);
+            needsSave = true;
           }
           if (!event.linkedForm) {
             event.linkedForm = form._id as any;
+            needsSave = true;
           }
-
-          await event.save();
+          if (needsSave) {
+            await event.save();
+          }
         }
       } catch (evErr) {
-        console.warn("Failed to auto-register into event pending participants:", evErr);
+        console.warn("Failed to link form to event:", evErr);
       }
     }
 
@@ -371,6 +310,62 @@ export const deleteSubmission = async (req: Request, res: Response, next: NextFu
           }
         }
       }
+    }
+
+    // If submission belongs to an event form, synchronize and clean up event participants
+    try {
+      const form = await FormModel.findById(submission.formId);
+      if (form && form.eventId) {
+        const { Event } = await import("../models/Event.model");
+        const event = await Event.findById(form.eventId);
+        if (event) {
+          const details = extractApplicantDetails(submission.responses || {});
+          const subEmail = details.email ? details.email.toLowerCase() : null;
+          const subUserId = submission.userId ? submission.userId.toString() : null;
+
+          let updated = false;
+
+          // Remove from approvedParticipants if present
+          if (Array.isArray(event.approvedParticipants) && (subEmail || subUserId)) {
+            const beforeCount = event.approvedParticipants.length;
+            event.approvedParticipants = (event.approvedParticipants as any).filter((p: any) => {
+              if (subUserId && p.userId && p.userId.toString() === subUserId) return false;
+              if (subEmail && p.email && p.email.toLowerCase() === subEmail) return false;
+              return true;
+            });
+            if (event.approvedParticipants.length !== beforeCount) updated = true;
+          }
+
+          // Remove from attendees if present
+          if (subUserId && Array.isArray(event.attendees)) {
+            const beforeCount = event.attendees.length;
+            event.attendees = event.attendees.filter((attId: any) => attId.toString() !== subUserId);
+            if (event.attendees.length !== beforeCount) {
+              updated = true;
+              await UserModel.findByIdAndUpdate(subUserId, {
+                $pull: { eventsAttended: event._id },
+              }).catch(() => {});
+            }
+          }
+
+          // Remove from legacy pendingParticipants if present
+          if (Array.isArray(event.pendingParticipants)) {
+            const beforeCount = event.pendingParticipants.length;
+            event.pendingParticipants = (event.pendingParticipants as any).filter((p: any) => {
+              if (subUserId && p.userId && p.userId.toString() === subUserId) return false;
+              if (subEmail && p.leaderEmail && p.leaderEmail.toLowerCase() === subEmail) return false;
+              return true;
+            });
+            if (event.pendingParticipants.length !== beforeCount) updated = true;
+          }
+
+          if (updated) {
+            await event.save();
+          }
+        }
+      }
+    } catch (cleanErr) {
+      console.warn("Failed to synchronize event participants on submission deletion:", cleanErr);
     }
 
     await FormSubmissionModel.findByIdAndDelete(submissionId);

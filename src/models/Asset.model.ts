@@ -1,73 +1,133 @@
 import mongoose, { Schema, Document } from "mongoose";
 
-// 1. Define the Interface (for TypeScript)
+export type AssetType = "borrowed" | "club";
+export type AssetCondition = "New" | "Excellent" | "Good" | "Fair" | "Damaged";
+
 export interface IAsset extends Document {
+  assetType: AssetType;
   name: string;
-  assetTag: string; // Unique identifier (e.g., INV-001)
-  category: "hardware" | "software_license" | "peripheral" | "furniture" | "other";
-  purchaseDate: Date;
-  purchaseCost: number;
-  currentCondition: "excellent" | "good" | "fair" | "poor" | "retired";
-  assignedTo?: mongoose.Types.ObjectId; // Reference to the User currently responsible
-  location: string; // e.g., "Lab 1", "Server Room", "Cloud Account"
-  isAvailable: boolean;
+  category: string;
+  quantity: number;
+  location: string;
+  condition: AssetCondition;
+  status: string;
   notes?: string;
+
+  // Specific to borrowed equipment
+  borrowedFrom?: string;
+  borrowedBy?: string;
+  borrowDate?: string;
+  dueDate?: string;
+  returnDate?: string;
+
+  // Specific to club assets
+  acquisitionDate?: string;
+  custodian?: string;
+  estimatedValue?: string;
+
+  createdBy?: mongoose.Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
-// 2. Define the Mongoose Schema
 const AssetSchema: Schema = new Schema(
   {
+    assetType: {
+      type: String,
+      enum: ["borrowed", "club"],
+      default: "club",
+      required: true,
+      index: true,
+    },
     name: {
       type: String,
       required: [true, "Asset name is required"],
       trim: true,
     },
-    assetTag: {
-      type: String,
-      required: [true, "Unique asset tag is required"],
-      unique: true,
-      trim: true,
-    },
     category: {
       type: String,
-      enum: ["hardware", "software_license", "peripheral", "furniture", "other"],
       required: [true, "Asset category is required"],
+      trim: true,
     },
-    purchaseDate: {
-      type: Date,
-      required: [true, "Purchase date is required"],
-    },
-    purchaseCost: {
+    quantity: {
       type: Number,
-      required: [true, "Purchase cost is required"],
-      min: 0,
-    },
-    currentCondition: {
-      type: String,
-      enum: ["excellent", "good", "fair", "poor", "retired"],
-      default: "good",
-    },
-    assignedTo: {
-      type: Schema.Types.ObjectId,
-      ref: "User",
-      required: false, // Optional: might be unassigned
+      required: true,
+      default: 1,
+      min: 1,
     },
     location: {
       type: String,
       required: [true, "Asset location is required"],
+      trim: true,
     },
-    isAvailable: {
-      type: Boolean,
-      default: true,
+    condition: {
+      type: String,
+      enum: ["New", "Excellent", "Good", "Fair", "Damaged"],
+      default: "Good",
+    },
+    status: {
+      type: String,
+      required: true,
+      default: "Available",
+      trim: true,
     },
     notes: {
       type: String,
+      trim: true,
+    },
+
+    // Borrowed equipment fields
+    borrowedFrom: {
+      type: String,
+      trim: true,
+    },
+    borrowedBy: {
+      type: String,
+      trim: true,
+    },
+    borrowDate: {
+      type: String,
+      trim: true,
+    },
+    dueDate: {
+      type: String,
+      trim: true,
+    },
+    returnDate: {
+      type: String,
+      trim: true,
+    },
+
+    // Club asset fields
+    acquisitionDate: {
+      type: String,
+      trim: true,
+    },
+    custodian: {
+      type: String,
+      trim: true,
+    },
+    estimatedValue: {
+      type: String,
+      trim: true,
+    },
+
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
     },
   },
   {
     timestamps: true,
+    toJSON: {
+      virtuals: true,
+      transform: (_, ret: any) => {
+        ret.id = ret._id.toString();
+        return ret;
+      },
+    },
   }
 );
 
-// 3. Export the Model
 export const Asset = mongoose.model<IAsset>("Asset", AssetSchema);
+export default Asset;

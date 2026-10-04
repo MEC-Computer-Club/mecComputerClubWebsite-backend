@@ -5,6 +5,7 @@ import {
   collectPageView,
   collectDuration,
   getSiteAnalyticsDashboard,
+  clearSiteAnalytics,
 } from "../controllers/analytics.controller";
 import { authMiddleware, optionalAuthMiddleware } from "../middlewares/auth.middleware";
 
@@ -22,6 +23,13 @@ router.get(
   "/site-overview",
   authMiddleware(["admin", "moderator", "executive", "lead"]),
   getSiteAnalyticsDashboard
+);
+
+// Admin: Reset/Clear Site & API Analytics
+router.delete(
+  "/site-overview",
+  authMiddleware(["admin", "executive"]),
+  clearSiteAnalytics
 );
 
 // Admin: Tool Analytics overview

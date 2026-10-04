@@ -395,3 +395,19 @@ export const getSiteAnalyticsDashboard = async (req: Request, res: Response, nex
   }
 };
 
+/**
+ * Admin endpoint to reset/clear site & API analytics
+ */
+export const clearSiteAnalytics = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await siteAnalyticsService.clearAllAnalytics();
+    res.status(200).json({
+      status: "success",
+      message: "Site and API analytics successfully cleared.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+

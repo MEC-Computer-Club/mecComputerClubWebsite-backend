@@ -6,7 +6,3 @@ dist
 public/uploads/questions/*
 !public/uploads/questions/.gitkeep
 
-# Media Management (Kept in local development)
-src/controllers/mediaManager.controller.ts
-src/routes/mediaManager.routes.ts
-src/services/mediaReference.service.ts

@@ -19,12 +19,14 @@ export interface SendEmailOptions {
   html: string;
   from?: string;
   replyTo?: string;
+  attachments?: any[];
 }
 
 export async function sendEmail(
   toOrOptions: string | SendEmailOptions,
   subject?: string,
-  html?: string
+  html?: string,
+  attachments?: any[]
 ) {
   if (typeof toOrOptions === "object" && toOrOptions !== null) {
     const opts = toOrOptions;
@@ -36,6 +38,7 @@ export async function sendEmail(
       replyTo: opts.replyTo,
       subject: opts.subject,
       html: opts.html,
+      attachments: opts.attachments,
     });
     return info;
   }
@@ -45,6 +48,7 @@ export async function sendEmail(
     to: toOrOptions,
     subject: subject || "",
     html: html || "",
+    attachments,
   });
   return info;
 }
@@ -53,7 +57,8 @@ export const sendBccEmail = async (
   bccEmails: string[],
   subject: string,
   html: string,
-  toEmail?: string
+  toEmail?: string,
+  attachments?: any[]
 ) => {
   const primaryTo = toEmail || process.env.EMAIL_FROM || "no-reply@meccomputerclub.org";
   const BATCH_SIZE = 50;
@@ -67,6 +72,7 @@ export const sendBccEmail = async (
       bcc: chunk,
       subject,
       html,
+      attachments,
     });
     results.push(info);
   }

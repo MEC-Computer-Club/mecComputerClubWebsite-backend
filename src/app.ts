@@ -31,9 +31,11 @@ import instituteRoutes from "./routes/institute.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import committeeRoutes from "./routes/committee.routes";
 import auditLogRoutes from "./routes/auditLog.routes";
+import assetRoutes from "./routes/asset.routes";
 import { getGalleryMedia } from "./controllers/event.controller";
 
 // Ensure all models are registered with Mongoose before any route handler runs
+import "./models/Asset.model";
 import "./models/Committee.model";
 import "./models/CoverPreset.model";
 import "./models/Notification.model";
@@ -122,8 +124,8 @@ app.use(cors(corsOptions));
 app.use(compression());
 
 // parse before routes
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "30mb" }));
+app.use(express.urlencoded({ limit: "30mb", extended: true }));
 app.use(cookieParser());
 app.use(apiAnalyticsMiddleware);
 app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
@@ -162,6 +164,7 @@ app.use("/api/email-templates", emailTemplateRoutes);
 app.use("/api/institutes", instituteRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/cover-presets", coverPresetRoutes);
+app.use("/api/assets", assetRoutes);
 
 // Local development: Media Manager
 try {

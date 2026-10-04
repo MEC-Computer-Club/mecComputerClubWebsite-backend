@@ -88,6 +88,24 @@ export interface IEventContributor {
   avatarUrl?: string;
 }
 
+export interface ISavedEventEmailTemplate {
+  _id?: mongoose.Types.ObjectId;
+  name: string;
+  subject: string;
+  body: string;
+  isHtml?: boolean;
+  audience?: string;
+  bannerUrl?: string;
+  attachments?: Array<{
+    name: string;
+    url: string;
+    size?: number;
+    mimeType?: string;
+  }>;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
 export interface IEvent extends Document {
   title: string;
   slug?: string;
@@ -146,6 +164,8 @@ export interface IEvent extends Document {
   linkedForm?: mongoose.Types.ObjectId;
   providesCertificate?: boolean;
   registeredCount?: number;
+  // Event Custom Saved Email Templates
+  savedEmailTemplates?: ISavedEventEmailTemplate[];
   createdBy?: mongoose.Types.ObjectId;
   createdByName?: string;
   lastUpdatedBy?: mongoose.Types.ObjectId;
@@ -241,6 +261,29 @@ const EventContributorSchema = new Schema<IEventContributor>({
   avatarUrl: { type: String },
 }, { _id: true });
 
+const SavedEventEmailTemplateSchema = new Schema<ISavedEventEmailTemplate>(
+  {
+    name: { type: String, required: true, trim: true },
+    subject: { type: String, required: true, trim: true },
+    body: { type: String, required: true },
+    isHtml: { type: Boolean, default: false },
+    audience: { type: String, default: "approved_participants" },
+    bannerUrl: { type: String, trim: true },
+    attachments: [
+      {
+        name: { type: String, required: true },
+        url: { type: String, required: false },
+        content: { type: String, required: false },
+        size: { type: Number },
+        mimeType: { type: String },
+      },
+    ],
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now },
+  },
+  { _id: true }
+);
+
 const EventSchema: Schema = new Schema(
   {
     title: { type: String, required: [true, "Event title is required"], trim: true },
@@ -312,6 +355,7 @@ const EventSchema: Schema = new Schema(
     projects: [{ type: Schema.Types.ObjectId, ref: "Project" }],
     forms: [{ type: Schema.Types.ObjectId, ref: "Form" }],
     linkedForm: { type: Schema.Types.ObjectId, ref: "Form" },
+    savedEmailTemplates: { type: [SavedEventEmailTemplateSchema], default: [] },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", index: true },
     createdByName: { type: String, trim: true },
     lastUpdatedBy: { type: Schema.Types.ObjectId, ref: "User" },

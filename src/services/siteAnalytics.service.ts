@@ -506,6 +506,20 @@ class SiteAnalyticsService {
   }
 
   /**
+   * Resets all in-memory buffers and wipes the stored analytics collections
+   */
+  public async clearAllAnalytics(): Promise<void> {
+    this.apiBuffer.clear();
+    this.pageViewBuffer = [];
+    this.pageDurationBuffer = [];
+
+    await Promise.all([
+      DailyWebAnalytics.deleteMany({}),
+      DailyApiAnalytics.deleteMany({}),
+    ]);
+  }
+
+  /**
    * Retrieves high-level analytics summary for the independent Dashboard Analytics page
    */
   public async getAnalyticsSummary(range: "24h" | "7d" | "30d" | "90d" = "7d") {

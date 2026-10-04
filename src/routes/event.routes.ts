@@ -22,6 +22,9 @@ import {
   // Form Submissions & Broadcasts
   getEventFormSubmissions, bulkApproveFormSubmissions,
   bulkRejectFormSubmissions, sendEventBroadcast,
+  // Event Custom Saved Email Templates
+  getEventSavedEmailTemplates, saveEventEmailTemplate,
+  deleteEventSavedEmailTemplate,
 } from "../controllers/event.controller";
 import { authMiddleware, optionalAuthMiddleware } from "../middlewares/auth.middleware";
 import { createUploader } from "../config/multer.config";
@@ -76,5 +79,10 @@ router.post("/:id/form-submissions/bulk-reject", authMiddleware(["admin", "moder
 
 // ── Mailing & Broadcasts ───────────────────────────────────────────────────
 router.post("/:id/broadcast", authMiddleware(["admin", "moderator"]), sendEventBroadcast);
+
+// ── Event Custom Email Templates ──────────────────────────────────────────
+router.get("/:id/email-templates", authMiddleware(["admin", "moderator"]), getEventSavedEmailTemplates);
+router.post("/:id/email-templates", authMiddleware(["admin", "moderator"]), saveEventEmailTemplate);
+router.delete("/:id/email-templates/:templateId", authMiddleware(["admin", "moderator"]), deleteEventSavedEmailTemplate);
 
 export default router;
