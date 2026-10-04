@@ -7,29 +7,29 @@ const router = Router();
 const upload = createFileUploader("misc");
 
 // Storage stats (usage, bandwidth, credits, objects)
-router.get("/stats", authMiddleware(["admin", "moderator", "advisor"]), mediaCtrl.getMediaStats);
+router.get("/stats", authMiddleware(["admin"]), mediaCtrl.getMediaStats);
 
 // List Cloudinary folders
-router.get("/folders", authMiddleware(["admin", "moderator", "advisor"]), mediaCtrl.getMediaFolders);
+router.get("/folders", authMiddleware(["admin"]), mediaCtrl.getMediaFolders);
 
 // Search & list Cloudinary media resources
-router.get("/resources", authMiddleware(["admin", "moderator", "advisor"]), mediaCtrl.getMediaResources);
+router.get("/resources", authMiddleware(["admin"]), mediaCtrl.getMediaResources);
 
 // Upload new media into a folder
 router.post(
   "/upload",
-  authMiddleware(["admin", "moderator", "advisor", "executive"]),
+  authMiddleware(["admin"]),
   upload.single("file"),
   mediaCtrl.uploadMedia
 );
 
 // Create new folder
-router.post("/folders", authMiddleware(["admin", "moderator", "advisor", "executive"]), mediaCtrl.createFolder);
+router.post("/folders", authMiddleware(["admin"]), mediaCtrl.createFolder);
 
 // Move to trash or permanently delete
-router.delete("/resource", authMiddleware(["admin", "moderator", "advisor", "executive"]), mediaCtrl.deleteMedia);
+router.delete("/resource", authMiddleware(["admin"]), mediaCtrl.deleteMedia);
 
 // Restore media asset from trash
-router.post("/restore", authMiddleware(["admin", "moderator", "advisor", "executive"]), mediaCtrl.restoreMedia);
+router.post("/restore", authMiddleware(["admin"]), mediaCtrl.restoreMedia);
 
 export default router;

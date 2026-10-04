@@ -1,39 +1,68 @@
 import { v2 as cloudinary } from "cloudinary";
 import { IUploadResult } from "../types/upload.types";
+import path from "path";
+import fs from "fs";
 import "../config/env";
+import { isCloudinaryConfigured } from "../config/multer.config";
 
-// Ensure Cloudinary is configured even if multer.config.ts hasn't been imported yet
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+if (isCloudinaryConfigured()) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
+}
 
 /**
- * Note: When using Multer with CloudinaryStorage, the file is
- * uploaded automatically. This helper is useful if you ever need
- * to manually upload a buffer or stream.
+ * Normalizes uploaded file metadata to ensure web-accessible URLs
+ * whether uploaded to Cloudinary or stored on the hosting server's public filesystem.
  */
 export const uploadToCloudinary = async (file: Express.Multer.File): Promise<IUploadResult> => {
-  // Since Multer-Storage-Cloudinary already uploaded the file,
-  // we just format the existing data to match your interface.
   const fileData = file as any;
 
+  let publicUrl = fileData.secure_url || fileData.url || "";
+  if (!publicUrl || (!publicUrl.startsWith("http://") && !publicUrl.startsWith("https://") && !publicUrl.startsWith("/public/"))) {
+    if (fileData.path) {
+      const cwd = process.cwd();
+      const relative = path.relative(path.join(cwd, "public"), fileData.path).replace(/\\/g, "/");
+      publicUrl = `/public/${relative.startsWith("/") ? relative.slice(1) : relative}`;
+    }
+  }
+
   return {
-    asset_id: fileData.asset_id || "",
-    public_id: fileData.filename || fileData.public_id,
-    url: fileData.path,
-    secure_url: fileData.secure_url || fileData.path,
+    asset_id: fileData.asset_id || fileData.filename || "",
+    public_id: fileData.public_id || fileData.filename || "",
+    url: publicUrl || fileData.path || "",
+    secure_url: publicUrl || fileData.path || "",
     original_filename: file.originalname,
     bytes: file.size,
-    format: fileData.format || "jpg",
+    format: fileData.format || path.extname(file.originalname).replace(".", "") || "jpg",
   };
 };
 
 /**
- * Deletes an image from Cloudinary using its public_id
+ * Deletes an image from Cloudinary or local disk
  */
 export const deleteFromCloudinary = async (publicId: string): Promise<void> => {
+  if (!publicId) return;
+
+  // Check if it's a local file in public/uploads
+  if (publicId.includes("/") || publicId.includes("\\")) {
+    const localPath = path.join(process.cwd(), "public", publicId.replace(/^\/?public\//, ""));
+    if (fs.existsSync(localPath)) {
+      try {
+        fs.unlinkSync(localPath);
+        return;
+      } catch (e) {
+        console.warn("Failed to delete local upload file:", e);
+      }
+    }
+  }
+
+  if (!isCloudinaryConfigured()) {
+    return;
+  }
+
   try {
     const result = await cloudinary.uploader.destroy(publicId);
 
@@ -51,6 +80,7 @@ export const deleteFromCloudinary = async (publicId: string): Promise<void> => {
  */
 export const moveToTrashInCloudinary = async (publicId: string, resourceType = "image"): Promise<string | null> => {
   if (!publicId) return null;
+  if (!isCloudinaryConfigured()) return null;
   try {
     const cleanName = publicId.split("/").pop() || `asset-${Date.now()}`;
     const targetFolder = publicId.startsWith("mec-cc-web/") ? "mec-cc-web/trash_to_delete" : "uploads/trash_to_delete";
@@ -76,6 +106,7 @@ export const restoreFromTrashInCloudinary = async (
   resourceType = "image"
 ): Promise<{ restoredPublicId: string; targetFolder: string; url: string; secure_url: string }> => {
   if (!publicId) throw new Error("publicId is required to restore");
+  if (!isCloudinaryConfigured()) throw new Error("Cloudinary is not configured");
 
   const rawFilename = publicId.split("/").pop() || "";
   // Strip trailing -<13-digit-timestamp> added during moveToTrash
@@ -123,6 +154,9 @@ function formatStorageBytes(bytes: number, decimals = 1): string {
  * Fetch high-level Cloudinary storage and credit statistics for dashboard display.
  */
 export const getCloudinaryUsageStats = async () => {
+  if (!isCloudinaryConfigured()) {
+    return null;
+  }
   try {
     const usage = await cloudinary.api.usage();
     const storageBytes = usage.storage?.usage || 0;

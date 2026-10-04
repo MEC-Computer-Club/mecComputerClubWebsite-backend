@@ -61,6 +61,7 @@ import path from "path";
 
 const app = express();
 app.use("/public", express.static(path.join(__dirname, "..", "public")));
+app.use("/uploads", express.static(path.join(__dirname, "..", "public", "uploads")));
 const frontendUrl = process.env.FRONTEND_URL;
 
 const allowedOrigins = [
@@ -182,6 +183,15 @@ app.get("/", (req, res) => {
   res.send("Welcome to the API! Visit /api/docs for documentation.");
 });
 app.get("/health", (req, res) => res.json({ ok: true }));
+
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    status: "fail",
+    message: `Can't find ${req.originalUrl} on this server!`,
+  });
+});
+
 app.use(globalErrorHandler);
 
 // health

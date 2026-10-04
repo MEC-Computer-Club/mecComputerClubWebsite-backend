@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
-    "start": "node src/server.ts",
+    "build": "tsc -p tsConfig.json",
+    "start": "node dist/server.js",
     "dev": "nodemon -e ts,js,json --watch src --exec ts-node src/server.ts",
     "seed:syllabus": "ts-node src/scripts/seedSyllabusData.ts",
     "seed:questions": "ts-node src/scripts/seedQuestionArchive.ts",
