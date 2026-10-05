@@ -2,13 +2,16 @@ import { Request, Response, NextFunction } from "express";
 import { v2 as cloudinary } from "cloudinary";
 import { moveToTrashInCloudinary, deleteFromCloudinary, restoreFromTrashInCloudinary } from "../services/upload.service";
 import { getDatabaseMediaReferences, attachMediaReferences, findOriginalFolderFromDatabase } from "../services/mediaReference.service";
+import { isCloudinaryConfigured } from "../config/multer.config";
 import "../config/env";
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+if (isCloudinaryConfigured()) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
+}
 
 function formatBytes(bytes: number, decimals = 1): string {
   if (!bytes || bytes === 0) return "0 B";
@@ -22,10 +25,30 @@ function formatBytes(bytes: number, decimals = 1): string {
 /**
  * @desc Get Cloudinary storage and usage statistics
  * @route GET /api/media-manager/stats
- * @access Admin, Moderator, Advisor
+ * @access Admin
  */
 export const getMediaStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const { stats: dbStats } = await getDatabaseMediaReferences();
+
+    if (!isCloudinaryConfigured()) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          unconfigured: true,
+          plan: "Not Configured",
+          lastUpdated: new Date().toISOString(),
+          storage: { bytes: 0, formatted: "0 B", credits: 0 },
+          bandwidth: { bytes: 0, formatted: "0 B", credits: 0 },
+          objects: { totalAssets: 0 },
+          transformations: { usage: 0, credits: 0 },
+          credits: { usage: 0, limit: 25, percentUsed: 0, remaining: 25 },
+          databaseReferences: dbStats,
+          rateLimit: { remaining: 500, allowed: 500, resetAt: new Date().toISOString() },
+        },
+      });
+    }
+
     const usage = await cloudinary.api.usage();
 
     const rawStorageBytes = usage.storage?.usage || 0;
@@ -68,8 +91,6 @@ export const getMediaStats = async (req: Request, res: Response, next: NextFunct
     const creditsUsed = usage.credits?.usage || 0;
     const creditsLimit = usage.credits?.limit || 25;
     const percentUsed = usage.credits?.used_percent || ((creditsUsed / creditsLimit) * 100);
-
-    const { stats: dbStats } = await getDatabaseMediaReferences();
 
     const stats = {
       plan: usage.plan || "Free",
@@ -121,6 +142,13 @@ export const getMediaStats = async (req: Request, res: Response, next: NextFunct
  */
 export const getMediaFolders = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!isCloudinaryConfigured()) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+      });
+    }
+
     const [rootRes, uploadsRes, mecWebRes] = await Promise.allSettled([
       cloudinary.api.root_folders(),
       cloudinary.api.sub_folders("uploads"),
@@ -188,6 +216,18 @@ export const getMediaFolders = async (req: Request, res: Response, next: NextFun
  */
 export const getMediaResources = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!isCloudinaryConfigured()) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          resources: [],
+          totalCount: 0,
+          nextCursor: null,
+          unconfigured: true,
+        },
+      });
+    }
+
     const {
       folder,
       search,
