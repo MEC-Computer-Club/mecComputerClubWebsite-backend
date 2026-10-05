@@ -36,7 +36,7 @@ jobs:
           server: ${{ secrets.CPANEL_FTP_SERVER }}
           username: ${{ secrets.CPANEL_FTP_USERNAME }}
           password: ${{ secrets.CPANEL_FTP_PASSWORD }}
-          server-dir: /apps/backend/
+          server-dir: apps/backend/
           exclude: |
             **/.git*
             **/.git*/**
@@ -46,9 +46,11 @@ jobs:
             .env.example
             tsConfig.json
 
-      - name: 🔄 Trigger cPanel Application Restart
+      - name: 🔄 Trigger cPanel Application Restart (Optional SSH)
         uses: appleboy/ssh-action@v1.0.3
-        if: ${{ secrets.CPANEL_SSH_HOST != '' }}
+        if: env.CPANEL_SSH_HOST != ''
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
         with:
           host: ${{ secrets.CPANEL_SSH_HOST }}
           username: ${{ secrets.CPANEL_SSH_USER }}
