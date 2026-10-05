@@ -103,6 +103,37 @@ export interface SendEmailOptions {
   attachments?: any[];
 }
 
+async function executeSendMail(
+  mailOptions: nodemailer.SendMailOptions,
+  category: EmailCategory = "noreply"
+) {
+  const dispatcher = getMailDispatcher(category);
+  if (!dispatcher.transporter) {
+    throw new Error(
+      `SMTP is not configured for category "${category}". Please check your SMTP environment variables.`
+    );
+  }
+
+  const finalMailOptions: nodemailer.SendMailOptions = {
+    ...mailOptions,
+    from: mailOptions.from || dispatcher.from,
+    replyTo: mailOptions.replyTo || dispatcher.replyTo,
+  };
+
+  try {
+    return await dispatcher.transporter.sendMail(finalMailOptions);
+  } catch (err: any) {
+    // If official SMTP failed (e.g. 535 auth error or network error) and no-reply is available, fall back automatically
+    if (category === "official" && noReplyTransporter && dispatcher.transporter !== noReplyTransporter) {
+      console.warn(
+        `[SMTP Fallback] Official SMTP dispatch failed (${err?.message || "auth error"}). Falling back to primary transporter with official sender headers.`
+      );
+      return await noReplyTransporter.sendMail(finalMailOptions);
+    }
+    throw err;
+  }
+}
+
 export async function sendEmail(
   toOrOptions: string | SendEmailOptions,
   subject?: string,
@@ -113,43 +144,30 @@ export async function sendEmail(
   if (typeof toOrOptions === "object" && toOrOptions !== null) {
     const opts = toOrOptions;
     const cat = opts.category || "noreply";
-    const dispatcher = getMailDispatcher(cat);
-
-    if (!dispatcher.transporter) {
-      throw new Error(
-        `SMTP is not configured for category "${cat}". Please check your SMTP environment variables.`
-      );
-    }
-
-    const info = await dispatcher.transporter.sendMail({
-      from: opts.from || dispatcher.from,
-      to: opts.to || dispatcher.from,
-      bcc: opts.bcc,
-      cc: opts.cc,
-      replyTo: opts.replyTo || dispatcher.replyTo,
-      subject: opts.subject,
-      html: opts.html,
-      attachments: opts.attachments,
-    });
-    return info;
-  }
-
-  const dispatcher = getMailDispatcher(category);
-  if (!dispatcher.transporter) {
-    throw new Error(
-      `SMTP is not configured for category "${category}". Please check your SMTP environment variables.`
+    return await executeSendMail(
+      {
+        from: opts.from,
+        to: opts.to,
+        bcc: opts.bcc,
+        cc: opts.cc,
+        replyTo: opts.replyTo,
+        subject: opts.subject,
+        html: opts.html,
+        attachments: opts.attachments,
+      },
+      cat
     );
   }
 
-  const info = await dispatcher.transporter.sendMail({
-    from: dispatcher.from,
-    to: toOrOptions,
-    replyTo: dispatcher.replyTo,
-    subject: subject || "",
-    html: html || "",
-    attachments,
-  });
-  return info;
+  return await executeSendMail(
+    {
+      to: toOrOptions,
+      subject: subject || "",
+      html: html || "",
+      attachments,
+    },
+    category
+  );
 }
 
 export const sendBccEmail = async (
@@ -161,27 +179,22 @@ export const sendBccEmail = async (
   category: EmailCategory = "official"
 ) => {
   const dispatcher = getMailDispatcher(category);
-  if (!dispatcher.transporter) {
-    throw new Error(
-      `SMTP is not configured for category "${category}". Please check your SMTP environment variables.`
-    );
-  }
-
   const primaryTo = toEmail || dispatcher.from;
   const BATCH_SIZE = 50;
   const results = [];
 
   for (let i = 0; i < bccEmails.length; i += BATCH_SIZE) {
     const chunk = bccEmails.slice(i, i + BATCH_SIZE);
-    const info = await dispatcher.transporter.sendMail({
-      from: dispatcher.from,
-      to: primaryTo,
-      bcc: chunk,
-      replyTo: dispatcher.replyTo,
-      subject,
-      html,
-      attachments,
-    });
+    const info = await executeSendMail(
+      {
+        to: primaryTo,
+        bcc: chunk,
+        subject,
+        html,
+        attachments,
+      },
+      category
+    );
     results.push(info);
   }
 

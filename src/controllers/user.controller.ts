@@ -216,7 +216,8 @@ export const register = async (req: Request, res: Response) => {
     // 6. Upload image to Cloudinary
     try {
       const uploadResult = await uploadToCloudinary(req.file);
-      profileImageUrl = uploadResult.url;
+      profileImageUrl = uploadResult.secure_url || uploadResult.url;
+      payload.imagePublicId = uploadResult.public_id;
     } catch (err) {
       console.error("Image upload failed:", err);
       return res.status(500).json({ success: false, message: "Image upload failed" });
@@ -943,28 +944,19 @@ export const updateUserImage = async (req: Request, res: Response, next: NextFun
 
     try {
       const uploadResult = await uploadToCloudinary(req.file);
-      newImageUrl = uploadResult.url || uploadResult.secure_url || (req.file as any).path;
-      newImagePublicId = uploadResult.public_id || (req.file as any).filename;
+      newImageUrl = uploadResult.secure_url || uploadResult.url;
+      newImagePublicId = uploadResult.public_id;
     } catch (err) {
       console.error("Image upload failed:", err);
       return res.status(500).json({ success: false, message: "Image upload failed" });
     }
 
-    // Move old photo to trash_to_delete folder in Cloudinary
-    if (user.imagePublicId) {
+    // Permanently delete old photo from Cloudinary (or local disk)
+    if (user.imagePublicId || user.imageUrl) {
       try {
-        await moveToTrashInCloudinary(user.imagePublicId);
+        await deleteFromCloudinary(user.imagePublicId || user.imageUrl);
       } catch (err) {
-        console.warn("Could not move old image to trash_to_delete in Cloudinary:", err);
-      }
-    } else if (user.imageUrl) {
-      try {
-        const match = user.imageUrl.match(/uploads\/[^.]+/);
-        if (match) {
-          await moveToTrashInCloudinary(match[0]);
-        }
-      } catch (err) {
-        console.warn("Could not move old image to trash_to_delete in Cloudinary by URL:", err);
+        console.warn("Could not delete old image from Cloudinary:", err);
       }
     }
 
@@ -1027,28 +1019,19 @@ export const updateUserCover = async (req: Request, res: Response, next: NextFun
 
     try {
       const uploadResult = await uploadToCloudinary(req.file);
-      newCoverUrl = uploadResult.url || uploadResult.secure_url || (req.file as any).path;
-      newCoverPublicId = uploadResult.public_id || (req.file as any).filename;
+      newCoverUrl = uploadResult.secure_url || uploadResult.url;
+      newCoverPublicId = uploadResult.public_id;
     } catch (err) {
       console.error("Cover upload failed:", err);
       return res.status(500).json({ success: false, message: "Cover upload failed" });
     }
 
-    // Move old cover to trash_to_delete folder in Cloudinary
-    if (user.coverPublicId) {
+    // Permanently delete old cover from Cloudinary (or local disk)
+    if (user.coverPublicId || user.coverUrl) {
       try {
-        await moveToTrashInCloudinary(user.coverPublicId);
+        await deleteFromCloudinary(user.coverPublicId || user.coverUrl);
       } catch (err) {
-        console.warn("Could not move old cover to trash_to_delete in Cloudinary:", err);
-      }
-    } else if (user.coverUrl) {
-      try {
-        const match = user.coverUrl.match(/uploads\/[^.]+/);
-        if (match) {
-          await moveToTrashInCloudinary(match[0]);
-        }
-      } catch (err) {
-        console.warn("Could not move old cover to trash_to_delete in Cloudinary by URL:", err);
+        console.warn("Could not delete old cover from Cloudinary:", err);
       }
     }
 
@@ -1818,6 +1801,22 @@ export const deleteUser = async (req: Request, res: Response, next: NextFunction
     const user = await User.findById(userIdToDelete);
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    // Permanently delete user's profile picture and cover photo from Cloudinary
+    if (user.imagePublicId || user.imageUrl) {
+      try {
+        await deleteFromCloudinary(user.imagePublicId || user.imageUrl);
+      } catch (err) {
+        console.warn("Could not delete user profile image on user deletion:", err);
+      }
+    }
+    if (user.coverPublicId || user.coverUrl) {
+      try {
+        await deleteFromCloudinary(user.coverPublicId || user.coverUrl);
+      } catch (err) {
+        console.warn("Could not delete user cover photo on user deletion:", err);
+      }
     }
 
     // Permanently remove the user from MongoDB
