@@ -26,6 +26,9 @@ jobs:
       - name: 🔨 Compile TypeScript
         run: npm run build
 
+      - name: 🔄 Prepare Passenger Restart Flag
+        run: mkdir -p tmp && date +%s > tmp/restart.txt
+
       - name: 🚀 Deploy via SFTP/FTP to cPanel
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
