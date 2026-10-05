@@ -189,9 +189,63 @@ export const getFormById = async (req: Request, res: Response, next: NextFunctio
       await form.save();
     }
 
+    let associatedEvent: any = null;
+    if (form.eventId && mongoose.Types.ObjectId.isValid(form.eventId.toString())) {
+      associatedEvent = await Event.findById(form.eventId)
+        .select("title slug maxParticipants approvedParticipants pendingParticipants attendees linkedForm forms status")
+        .lean();
+    }
+    if (!associatedEvent) {
+      associatedEvent = await Event.findOne({
+        $or: [{ linkedForm: form._id }, { forms: form._id }],
+      })
+        .select("title slug maxParticipants approvedParticipants pendingParticipants attendees linkedForm forms status")
+        .lean();
+    }
+
+    const formObj: any = form.toObject();
+
+    if (associatedEvent) {
+      const associatedFormIds = new Set<string>();
+      associatedFormIds.add(form._id.toString());
+      if (associatedEvent.linkedForm) associatedFormIds.add(associatedEvent.linkedForm.toString());
+      if (Array.isArray(associatedEvent.forms)) {
+        associatedEvent.forms.forEach((f: any) => {
+          const fid = f?._id ? f._id.toString() : f?.toString();
+          if (fid) associatedFormIds.add(fid);
+        });
+      }
+
+      const formSubmissionsCount = await FormSubmissionModel.countDocuments({
+        formId: { $in: Array.from(associatedFormIds).map((id) => new mongoose.Types.ObjectId(id)) },
+      });
+      const directCount = (associatedEvent.approvedParticipants?.length || 0) + (associatedEvent.pendingParticipants?.length || 0);
+      const attendeesCount = associatedEvent.attendees?.length || 0;
+      const registeredCount = Math.max(formSubmissionsCount, directCount, attendeesCount);
+      const maxLimit = typeof associatedEvent.maxParticipants === "number" && associatedEvent.maxParticipants > 0 ? associatedEvent.maxParticipants : null;
+      const isCapacityReached = Boolean(maxLimit && registeredCount >= maxLimit);
+
+      formObj.eventInfo = {
+        eventId: associatedEvent._id.toString(),
+        eventTitle: associatedEvent.title,
+        eventSlug: associatedEvent.slug,
+        maxParticipants: maxLimit,
+        registeredCount,
+        isCapacityReached,
+      };
+      formObj.maxParticipants = maxLimit;
+      formObj.registeredCount = registeredCount;
+      formObj.isCapacityReached = isCapacityReached;
+    } else {
+      const formSubmissionsCount = await FormSubmissionModel.countDocuments({ formId: form._id });
+      formObj.registeredCount = formSubmissionsCount;
+      formObj.maxParticipants = null;
+      formObj.isCapacityReached = false;
+    }
+
     res.json({
       success: true,
-      data: form,
+      data: formObj,
     });
   } catch (error) {
     next(error);
