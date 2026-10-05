@@ -14,26 +14,91 @@ if (isCloudinaryConfigured()) {
 }
 
 /**
+ * Extracts the clean Cloudinary public_id from a raw public_id or full Cloudinary URL.
+ */
+export const extractCloudinaryPublicId = (input?: string | null): string | null => {
+  if (!input || typeof input !== "string") return null;
+  let trimmed = input.trim();
+  if (trimmed.includes("res.cloudinary.com")) {
+    const httpIdx = trimmed.indexOf("http");
+    if (httpIdx !== -1) {
+      trimmed = trimmed.substring(httpIdx);
+    }
+  }
+
+  // If it's already a public_id (not a full HTTP/HTTPS URL)
+  if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+    const clean = trimmed.replace(/^\/+/, "");
+    const extIndex = clean.lastIndexOf(".");
+    if (extIndex > clean.lastIndexOf("/")) {
+      return clean.substring(0, extIndex);
+    }
+    return clean;
+  }
+
+  const uploadIndex = trimmed.indexOf("/upload/");
+  if (uploadIndex === -1) return null;
+  let rest = trimmed.substring(uploadIndex + "/upload/".length).split("?")[0];
+  const segments = rest.split("/");
+
+  // Skip transformations and version prefixes (e.g. v1791223582 or f_auto,q_auto)
+  while (segments.length > 1) {
+    const seg = segments[0];
+    if (seg.startsWith("v") && /^v\d+$/.test(seg)) {
+      segments.shift();
+      break;
+    } else if (seg.includes(",") || seg.includes("_") || /^(w|h|c|g|q|f|dpr)_/.test(seg)) {
+      segments.shift();
+    } else {
+      break;
+    }
+  }
+
+  let publicIdWithExt = segments.join("/");
+  const dotIndex = publicIdWithExt.lastIndexOf(".");
+  if (dotIndex !== -1) {
+    publicIdWithExt = publicIdWithExt.substring(0, dotIndex);
+  }
+  return publicIdWithExt;
+};
+
+/**
  * Normalizes uploaded file metadata to ensure web-accessible URLs
  * whether uploaded to Cloudinary or stored on the hosting server's public filesystem.
  */
 export const uploadToCloudinary = async (file: Express.Multer.File): Promise<IUploadResult> => {
   const fileData = file as any;
 
-  let publicUrl = fileData.secure_url || fileData.url || "";
-  if (!publicUrl || (!publicUrl.startsWith("http://") && !publicUrl.startsWith("https://") && !publicUrl.startsWith("/public/"))) {
-    if (fileData.path) {
+  // 1. Direct Cloudinary URL check (multer-storage-cloudinary sets file.path or file.secure_url)
+  let publicUrl = "";
+  if (typeof fileData.secure_url === "string" && fileData.secure_url.startsWith("http")) {
+    publicUrl = fileData.secure_url;
+  } else if (typeof fileData.url === "string" && fileData.url.startsWith("http")) {
+    publicUrl = fileData.url;
+  } else if (typeof fileData.path === "string" && fileData.path.startsWith("http")) {
+    publicUrl = fileData.path;
+  }
+
+  // 2. Fallback for local files saved on disk in public/uploads
+  if (!publicUrl) {
+    if (fileData.path && typeof fileData.path === "string") {
       const cwd = process.cwd();
       const relative = path.relative(path.join(cwd, "public"), fileData.path).replace(/\\/g, "/");
       publicUrl = `/public/${relative.startsWith("/") ? relative.slice(1) : relative}`;
     }
   }
 
+  // 3. Resolve clean public_id
+  let publicId = fileData.public_id || fileData.filename || "";
+  if ((!publicId || publicId.startsWith("http")) && publicUrl) {
+    publicId = extractCloudinaryPublicId(publicUrl) || "";
+  }
+
   return {
-    asset_id: fileData.asset_id || fileData.filename || "",
-    public_id: fileData.public_id || fileData.filename || "",
-    url: publicUrl || fileData.path || "",
-    secure_url: publicUrl || fileData.path || "",
+    asset_id: fileData.asset_id || publicId,
+    public_id: publicId,
+    url: publicUrl,
+    secure_url: publicUrl,
     original_filename: file.originalname,
     bytes: file.size,
     format: fileData.format || path.extname(file.originalname).replace(".", "") || "jpg",
@@ -41,14 +106,14 @@ export const uploadToCloudinary = async (file: Express.Multer.File): Promise<IUp
 };
 
 /**
- * Deletes an image from Cloudinary or local disk
+ * Deletes an image from Cloudinary or local disk permanently
  */
-export const deleteFromCloudinary = async (publicId: string): Promise<void> => {
-  if (!publicId) return;
+export const deleteFromCloudinary = async (publicIdOrUrl?: string | null): Promise<void> => {
+  if (!publicIdOrUrl || typeof publicIdOrUrl !== "string") return;
 
   // Check if it's a local file in public/uploads
-  if (publicId.includes("/") || publicId.includes("\\")) {
-    const localPath = path.join(process.cwd(), "public", publicId.replace(/^\/?public\//, ""));
+  if (!publicIdOrUrl.includes("res.cloudinary.com") && (publicIdOrUrl.startsWith("/public/") || publicIdOrUrl.startsWith("public/"))) {
+    const localPath = path.join(process.cwd(), "public", publicIdOrUrl.replace(/^\/?public\//, ""));
     if (fs.existsSync(localPath)) {
       try {
         fs.unlinkSync(localPath);
@@ -63,15 +128,17 @@ export const deleteFromCloudinary = async (publicId: string): Promise<void> => {
     return;
   }
 
+  const publicId = extractCloudinaryPublicId(publicIdOrUrl);
+  if (!publicId) return;
+
   try {
-    const result = await cloudinary.uploader.destroy(publicId);
+    const result = await cloudinary.uploader.destroy(publicId, { invalidate: true });
 
     if (result.result !== "ok" && result.result !== "not_found") {
-      throw new Error(`Cloudinary returned: ${result.result}`);
+      console.warn(`Cloudinary returned: ${result.result} for ${publicId}`);
     }
   } catch (error: any) {
-    console.error("Cloudinary deletion failed:", error);
-    throw new Error(`Cloudinary deletion failed: ${error.message}`);
+    console.error(`Cloudinary deletion failed for ${publicId}:`, error?.message || error);
   }
 };
 
