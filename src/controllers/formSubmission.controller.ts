@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import FormModel, { isFormClosed } from "../models/Form.model";
 import FormSubmissionModel from "../models/FormSubmission.model";
 import UserModel from "../models/User.model";
+import { Event } from "../models/Event.model";
 import { deleteFromCloudinary } from "../services/upload.service";
 import AppError from "../utils/AppError";
 import { extractApplicantDetails } from "./event.controller";
@@ -36,6 +37,45 @@ export const submitForm = async (req: Request, res: Response, next: NextFunction
       return next(
         new AppError("This form has reached its deadline and is no longer accepting responses.", 403)
       );
+    }
+
+    // Check if form is associated with an event that has reached max capacity
+    let associatedEvent: any = null;
+    if (form.eventId && mongoose.Types.ObjectId.isValid(form.eventId.toString())) {
+      associatedEvent = await Event.findById(form.eventId);
+    }
+    if (!associatedEvent) {
+      associatedEvent = await Event.findOne({
+        $or: [{ linkedForm: form._id }, { forms: form._id }],
+      });
+    }
+
+    if (associatedEvent && typeof associatedEvent.maxParticipants === "number" && associatedEvent.maxParticipants > 0) {
+      const associatedFormIds = new Set<string>();
+      associatedFormIds.add(form._id.toString());
+      if (associatedEvent.linkedForm) associatedFormIds.add(associatedEvent.linkedForm.toString());
+      if (Array.isArray(associatedEvent.forms)) {
+        associatedEvent.forms.forEach((f: any) => {
+          const fid = f?._id ? f._id.toString() : f?.toString();
+          if (fid) associatedFormIds.add(fid);
+        });
+      }
+
+      const formSubmissionsCount = await FormSubmissionModel.countDocuments({
+        formId: { $in: Array.from(associatedFormIds).map((id) => new mongoose.Types.ObjectId(id)) },
+      });
+      const directCount = (associatedEvent.approvedParticipants?.length || 0) + (associatedEvent.pendingParticipants?.length || 0);
+      const attendeesCount = associatedEvent.attendees?.length || 0;
+      const registeredCount = Math.max(formSubmissionsCount, directCount, attendeesCount);
+
+      if (registeredCount >= associatedEvent.maxParticipants) {
+        return next(
+          new AppError(
+            `Registration for "${associatedEvent.title}" is closed as the maximum capacity limit of ${associatedEvent.maxParticipants} participants has been reached.`,
+            403
+          )
+        );
+      }
     }
 
     let resolvedUserId = req?.user?._id || (req?.user as any)?.id || null;

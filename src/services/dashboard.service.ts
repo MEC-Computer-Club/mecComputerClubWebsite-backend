@@ -295,7 +295,7 @@ export const approveOrRejectUser = async (
 
     // notify user via email
     const emailTemplate = generateEmail("status", { userName: user.fullName, status: "Approved" });
-    await sendEmail(user.email, "Your MEC Club membership was approved", emailTemplate);
+    await sendEmail(user.email, "Your MEC Club membership was approved", emailTemplate, undefined, "official");
 
     // dispatch in-app notification
     createNotification({
@@ -317,7 +317,7 @@ export const approveOrRejectUser = async (
     await user.save();
 
     const emailTemplate = generateEmail("status", { userName: user.fullName, status: "Rejected" });
-    await sendEmail(user.email, "Your MEC Club application was rejected", emailTemplate);
+    await sendEmail(user.email, "Your MEC Club application was rejected", emailTemplate, undefined, "official");
 
     // dispatch in-app notification
     createNotification({

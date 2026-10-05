@@ -205,11 +205,12 @@ export const replyToMessage = async (req: Request, res: Response, next: NextFunc
     `;
 
     try {
-      await sendEmail(
-        message.senderEmail,
-        `Re: ${message.subject} — MEC Computer Club`,
-        emailHtml
-      );
+      await sendEmail({
+        to: message.senderEmail,
+        subject: `Re: ${message.subject} — MEC Computer Club`,
+        html: emailHtml,
+        category: "official",
+      });
     } catch (emailErr) {
       console.error("Failed to send reply email:", emailErr);
       // Don't fail the request — reply is saved, email is best-effort

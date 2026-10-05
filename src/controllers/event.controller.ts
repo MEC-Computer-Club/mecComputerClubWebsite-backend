@@ -2387,6 +2387,7 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
           subject: substitutedTestSubject,
           html: emailHtml,
           attachments: mailAttachments,
+          category: "official",
         });
         return res.status(200).json({
           success: true,
@@ -2415,6 +2416,7 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
             subject: perRecipientSubject,
             html: emailHtml,
             attachments: mailAttachments,
+            category: "official",
           });
           sentCount++;
         } catch (err) {
@@ -2429,12 +2431,11 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
         const emailHtml = generateEmailHtml(groupGreeting);
         try {
           await sendEmail({
-            from: process.env.EMAIL_FROM,
-            to: process.env.EMAIL_FROM || "no-reply@meccomputerclub.org",
             cc: sanitizedCcList,
             subject: cleanSubject,
             html: emailHtml,
             attachments: mailAttachments,
+            category: "official",
           });
         } catch (err) {
           console.error("Failed to dispatch CC broadcast copy in individual mode:", err);
@@ -2455,6 +2456,7 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
             subject: perRecipientSubject,
             html: emailHtml,
             attachments: mailAttachments,
+            category: "official",
           });
           sentCount++;
         } catch (err) {
@@ -2471,12 +2473,11 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
           const combinedCc = Array.from(new Set([...chunk, ...sanitizedCcList]));
           try {
             await sendEmail({
-              from: process.env.EMAIL_FROM,
-              to: process.env.EMAIL_FROM || "no-reply@meccomputerclub.org",
               cc: combinedCc,
               subject: cleanSubject,
               html: emailHtml,
               attachments: mailAttachments,
+              category: "official",
             });
             sentCount += chunk.length;
           } catch (err) {
@@ -2499,6 +2500,7 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
             subject: perRecipientSubject,
             html: emailHtml,
             attachments: mailAttachments,
+            category: "official",
           });
           sentCount++;
         } catch (err) {
@@ -2514,13 +2516,12 @@ export const sendEventBroadcast = async (req: Request, res: Response, next: Next
           const chunk = bccEmailList.slice(i, i + BATCH_SIZE);
           try {
             await sendEmail({
-              from: process.env.EMAIL_FROM,
-              to: process.env.EMAIL_FROM || "no-reply@meccomputerclub.org",
               bcc: chunk,
               cc: i === 0 && sanitizedCcList.length > 0 ? sanitizedCcList : undefined,
               subject: cleanSubject,
               html: emailHtml,
               attachments: mailAttachments,
+              category: "official",
             });
             sentCount += chunk.length;
           } catch (err) {

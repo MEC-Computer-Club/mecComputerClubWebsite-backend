@@ -32,10 +32,12 @@ import analyticsRoutes from "./routes/analytics.routes";
 import committeeRoutes from "./routes/committee.routes";
 import auditLogRoutes from "./routes/auditLog.routes";
 import assetRoutes from "./routes/asset.routes";
+import developerRoutes from "./routes/developer.routes";
 import { getGalleryMedia } from "./controllers/event.controller";
 
 // Ensure all models are registered with Mongoose before any route handler runs
 import "./models/Asset.model";
+import "./models/Developer.model";
 import "./models/Committee.model";
 import "./models/CoverPreset.model";
 import "./models/Notification.model";
@@ -166,6 +168,7 @@ app.use("/api/institutes", instituteRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/cover-presets", coverPresetRoutes);
 app.use("/api/assets", assetRoutes);
+app.use("/api/developers", developerRoutes);
 
 // Local development: Media Manager
 try {

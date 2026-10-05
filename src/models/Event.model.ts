@@ -140,6 +140,8 @@ export interface IEvent extends Document {
   bannerImagePosition?: string;
   // Organiser
   organizer?: string;
+  organizerType?: "mec_cc" | "other";
+  organizerLogoUrl?: string;
   contactEmail?: string;
   contactPhone?: string;
   // Tags & visibility
@@ -335,6 +337,8 @@ const EventSchema: Schema = new Schema(
     bannerImageUrl: { type: String },
     bannerImagePosition: { type: String, default: "50% 50%" },
     organizer: { type: String, trim: true },
+    organizerType: { type: String, enum: ["mec_cc", "other"], default: "mec_cc" },
+    organizerLogoUrl: { type: String, trim: true },
     contactEmail: { type: String, trim: true },
     contactPhone: { type: String, trim: true },
     tags: { type: [String], default: [] },
