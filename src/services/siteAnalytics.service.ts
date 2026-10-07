@@ -382,6 +382,10 @@ class SiteAnalyticsService {
           const visitorHashSet = new Set<string>();
           let newSessionsCount = 0;
 
+          // Track page views per session to detect single-page (bounce) sessions
+          const sessionPageCounts = new Map<string, number>();
+          const sessionIsNew = new Set<string>();
+
           for (const v of views) {
             visitorHashSet.add(v.visitorHash);
             pageCountMap.set(v.path, (pageCountMap.get(v.path) || 0) + 1);
@@ -389,13 +393,28 @@ class SiteAnalyticsService {
             browserCountMap.set(v.browser, (browserCountMap.get(v.browser) || 0) + 1);
             osCountMap.set(v.os, (osCountMap.get(v.os) || 0) + 1);
             referrerCountMap.set(v.referrer, (referrerCountMap.get(v.referrer) || 0) + 1);
-            if (v.isFirstPage) newSessionsCount += 1;
+            if (v.isFirstPage) {
+              newSessionsCount += 1;
+              if (v.sessionId) sessionIsNew.add(v.sessionId);
+            }
+            if (v.sessionId) {
+              sessionPageCounts.set(v.sessionId, (sessionPageCounts.get(v.sessionId) || 0) + 1);
+            }
+          }
+
+          // Count bounce sessions: new sessions that viewed only 1 page in this batch
+          let newSinglePageSessions = 0;
+          for (const sid of sessionIsNew) {
+            if ((sessionPageCounts.get(sid) || 0) <= 1) {
+              newSinglePageSessions += 1;
+            }
           }
 
           // Build atomic MongoDB update
           const incFields: Record<string, number> = {
             totalPageViews: views.length,
             sessionsCount: newSessionsCount,
+            singlePageSessions: newSinglePageSessions,
             "devices.desktop": deviceCountMap.desktop,
             "devices.mobile": deviceCountMap.mobile,
             "devices.tablet": deviceCountMap.tablet,
@@ -730,9 +749,15 @@ class SiteAnalyticsService {
 
     // Summary calculations
     const avgDwellTimeSeconds = totalPageViews > 0 ? Math.round(totalSeconds / totalPageViews) : 0;
+
+    // Bounce rate: percentage of sessions where user viewed only 1 page and left
+    let totalSinglePageSessions = 0;
+    for (const doc of webDocs) {
+      totalSinglePageSessions += doc.singlePageSessions || 0;
+    }
     const bounceRate =
       totalSessions > 0
-        ? Number((Math.min(100, (Math.max(0, totalSessions - totalPageViews + 1) / totalSessions) * 100)).toFixed(1))
+        ? Number(((totalSinglePageSessions / totalSessions) * 100).toFixed(1))
         : 0;
 
     return {
