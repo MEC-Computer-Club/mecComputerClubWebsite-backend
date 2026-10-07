@@ -17,6 +17,7 @@ import { generateEmail } from "../utils/generateEmailTemplate";
 import { getClientIp } from "../middlewares/loginRateLimiter.middleware";
 import AppError from "../utils/AppError";
 import { CP_SHEET_PROBLEM_IDS, CP_SHEET_TITLE_INDEX, normalizeProblemTitle } from "../utils/cpSheetProblemIds";
+import { getEmailFrontendUrl } from "../utils/getFrontendUrl";
 
 export const register = async (req: Request, res: Response) => {
   let profileImageUrl: string | null = null;
@@ -376,7 +377,7 @@ export const login = async (req: Request, res: Response) => {
         if (canSendCode) {
           const secCode = user.generateLoginSecurityCode();
           await user.save();
-          const frontendUrl = process.env.FRONTEND_URL || "https://mec-cc.vercel.app";
+          const frontendUrl = getEmailFrontendUrl();
           const emailHtml = generateEmail("loginSecurityCode", {
             userName: user.fullName,
             code: secCode,
@@ -427,7 +428,7 @@ export const login = async (req: Request, res: Response) => {
         const secCode = user.generateLoginSecurityCode();
         await user.save();
 
-        const frontendUrl = process.env.FRONTEND_URL || "https://mec-cc.vercel.app";
+        const frontendUrl = getEmailFrontendUrl();
         const emailHtml = generateEmail("loginSecurityCode", {
           userName: user.fullName,
           code: secCode,

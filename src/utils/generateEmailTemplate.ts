@@ -346,8 +346,8 @@ export const DEFAULT_EMAIL_BRANDING: EmailBrandingConfig = {
   institutionName: "Mymensingh Engineering College",
   footerAddress: "Mymensingh Engineering College, Mymensingh-2200",
   footerNote: "Official Notification System • Automated notification, please do not reply directly.",
-  websiteUrl: "https://www.meccomputerclub.org/",
-  contactUrl: "https://www.meccomputerclub.org/contact-us",
+  websiteUrl: "https://meccomputerclub.org",
+  contactUrl: "https://meccomputerclub.org/contact",
   primaryColor: "#002e5b",
   accentColor: "#f58a1f",
 };

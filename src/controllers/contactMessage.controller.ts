@@ -5,8 +5,9 @@ import { sendEmail } from "../utils/sendEmail";
 import { generateEmail } from "../utils/generateEmailTemplate";
 import { createNotification } from "../services/notification.service";
 import { getContactMessageEmailRecipients } from "./emailRouting.controller";
+import { getEmailFrontendUrl } from "../utils/getFrontendUrl";
 
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const FRONTEND_URL = getEmailFrontendUrl();
 
 /**
  * @desc  Submit a contact message (public)
