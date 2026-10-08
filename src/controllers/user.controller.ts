@@ -3,7 +3,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import * as userService from "../services/user.service";
-import User, { IUser } from "../models/User.model";
+import User, { IUser, deriveClubRole } from "../models/User.model";
 import InvitationCodeModel from "../models/InvitationCode.model";
 import { Certificate } from "../models/Certificate.model";
 import { Event } from "../models/Event.model";
@@ -1133,62 +1133,29 @@ export const updateUserRole = async (req: Request, res: Response, next: NextFunc
     if (department !== undefined) updateData.department = department;
     if (session !== undefined) updateData.session = session;
     if (batch !== undefined) updateData.batch = batch;
-    // Resolve cross-field role and graduation consistency
-    const targetClubRole = clubRole !== undefined ? clubRole : (role === "member" && existingUser.clubRole === "alumni" ? "member" : undefined);
-    const targetRole = role !== undefined ? role : (clubRole === "member" && existingUser.role === "alumni" ? "member" : undefined);
-
-    if (targetRole !== undefined) updateData.role = targetRole;
-    if (targetClubRole !== undefined) updateData.clubRole = targetClubRole;
+    if (role !== undefined) updateData.role = role;
+    if (designation !== undefined) {
+      updateData.designation = designation.trim();
+    } else if (customRole !== undefined) {
+      updateData.designation = customRole.trim();
+    }
 
     if (isGraduated !== undefined) {
       updateData.isGraduated = Boolean(isGraduated);
       if (!updateData.isGraduated) {
         updateData.passingYear = null;
-        if (updateData.clubRole === "alumni" || (!clubRole && existingUser.clubRole === "alumni")) {
-          updateData.clubRole = "member";
-        }
-        if (updateData.role === "alumni" || (!role && existingUser.role === "alumni")) {
-          updateData.role = "member";
-        }
-      }
-    } else {
-      // Auto-infer graduation status if not explicitly passed
-      if (updateData.clubRole === "member" || (targetRole === "member" && (existingUser.clubRole === "alumni" || existingUser.isGraduated))) {
-        updateData.isGraduated = false;
-        updateData.passingYear = null;
-        if (!updateData.clubRole) updateData.clubRole = "member";
-      } else if (updateData.clubRole === "alumni" || updateData.role === "alumni") {
-        updateData.isGraduated = true;
       }
     }
-
     if (passingYear !== undefined) {
       updateData.passingYear = passingYear ? Number(passingYear) : null;
     }
 
-    if (designation !== undefined) {
-      updateData.designation = designation.trim();
-      // Auto-sync clubRole if clubRole was not explicitly specified in the update
-      if (clubRole === undefined && targetClubRole === undefined) {
-        const dLower = designation.toLowerCase().trim();
-        if (dLower.includes("advisor") || dLower.includes("patron")) {
-          updateData.clubRole = "advisor";
-        } else if (dLower === "" || dLower === "general member" || dLower === "member" || dLower === "club member") {
-          const effectiveIsGraduated = updateData.isGraduated !== undefined ? updateData.isGraduated : existingUser.isGraduated;
-          updateData.clubRole = effectiveIsGraduated ? "alumni" : "member";
-        } else {
-          updateData.clubRole = "executive";
-        }
-      }
-    } else if (customRole !== undefined) {
-      // Backward-compatible fallback if an older payload passes customRole
-      updateData.designation = customRole.trim();
-    }
-
-    // If reverting an alumni to member and designation still has "alumni", reset to "General Member"
-    if (updateData.clubRole === "member" && designation === undefined && (!existingUser.designation || existingUser.designation.toLowerCase().includes("alumni"))) {
-      updateData.designation = "General Member";
-    }
+    // Auto-derive clubRole from updated user properties
+    const mergedForDerivation = {
+      ...existingUser.toObject(),
+      ...updateData,
+    };
+    updateData.clubRole = deriveClubRole(mergedForDerivation);
     if (applicationStatus !== undefined) updateData.applicationStatus = applicationStatus;
     if (profileStatus !== undefined) updateData.profileStatus = profileStatus;
     if (skills !== undefined) {

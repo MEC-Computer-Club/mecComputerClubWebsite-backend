@@ -290,6 +290,45 @@ function checkProfileCompletion(doc: any): boolean {
   );
 }
 
+export function isAdvisorRoleOrDesignation(doc: any): boolean {
+  if (!doc) return false;
+  const desig = (doc.designation || doc.customRole || "").toLowerCase().trim();
+  const role = (doc.role || "").toLowerCase().trim();
+  const clubRole = (doc.clubRole || "").toLowerCase().trim();
+  return (
+    role === "advisor" ||
+    clubRole === "advisor" ||
+    desig.includes("advisor") ||
+    desig.includes("patron") ||
+    desig.includes("faculty") ||
+    desig.includes("mentor") ||
+    doc.session === "Faculty"
+  );
+}
+
+export function deriveClubRole(doc: any): "advisor" | "alumni" | "executive" | "member" {
+  if (!doc) return "member";
+
+  // 1. Advisor takes precedence
+  if (isAdvisorRoleOrDesignation(doc)) {
+    return "advisor";
+  }
+
+  // 2. Graduated members are Alumni
+  if (Boolean(doc.isGraduated)) {
+    return "alumni";
+  }
+
+  // 3. Active members with an official executive designation
+  const desig = (doc.designation || doc.customRole || "").trim().toLowerCase();
+  if (desig && desig !== "general member" && desig !== "member" && desig !== "student") {
+    return "executive";
+  }
+
+  // 4. Default: General Member
+  return "member";
+}
+
 // Pre-save hook for direct save operations
 userSchema.pre("save", function (next) {
   if (
@@ -300,6 +339,10 @@ userSchema.pre("save", function (next) {
   } else {
     this.profileStatus = "incomplete";
   }
+
+  // Auto-derive clubRole
+  this.clubRole = deriveClubRole(this);
+
   next();
 });
 
@@ -308,19 +351,10 @@ userSchema.pre("findOneAndUpdate", async function (next) {
   try {
     const update = this.getUpdate() as any;
 
-    // Skip if profileStatus is explicitly being set to something other than incomplete
-    if (update.$set?.profileStatus === "banned" || update.$set?.profileStatus === "deleted") {
-      return next();
-    }
-
     // Get the current document
     const docToUpdate = await this.model.findOne(this.getQuery());
 
-    if (
-      !docToUpdate ||
-      docToUpdate.profileStatus === "banned" ||
-      docToUpdate.profileStatus === "deleted"
-    ) {
+    if (!docToUpdate) {
       return next();
     }
 
@@ -329,6 +363,24 @@ userSchema.pre("findOneAndUpdate", async function (next) {
       ...docToUpdate.toObject(),
       ...(update.$set || {}),
     };
+
+    // Auto-derive clubRole if not explicitly forced or whenever relevant fields change
+    if (!update.$set) {
+      update.$set = {};
+    }
+    update.$set.clubRole = deriveClubRole(mergedDoc);
+
+    // Skip profileStatus check if explicitly set to banned or deleted
+    if (update.$set?.profileStatus === "banned" || update.$set?.profileStatus === "deleted") {
+      return next();
+    }
+
+    if (
+      docToUpdate.profileStatus === "banned" ||
+      docToUpdate.profileStatus === "deleted"
+    ) {
+      return next();
+    }
 
     // Handle nested updates for socialLinks
     if (update.$set?.socialLinks) {
@@ -340,14 +392,8 @@ userSchema.pre("findOneAndUpdate", async function (next) {
 
     // Check if profile will be complete after update
     if (checkProfileCompletion(mergedDoc)) {
-      if (!update.$set) {
-        update.$set = {};
-      }
       update.$set.profileStatus = "active";
     } else {
-      if (!update.$set) {
-        update.$set = {};
-      }
       update.$set.profileStatus = "incomplete";
     }
 
