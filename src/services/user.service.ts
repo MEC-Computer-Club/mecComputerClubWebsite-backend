@@ -7,8 +7,9 @@ import { generateOtpCode } from "../utils/generateInviteCode";
 import InvitationCodeModel from "../models/InvitationCode.model";
 import AppError from "../utils/AppError";
 import { getRegistrationApprovalEmailRecipients } from "../controllers/emailRouting.controller";
+import { getEmailFrontendUrl } from "../utils/getFrontendUrl";
 
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const FRONTEND_URL = getEmailFrontendUrl();
 
 export const createUser = async (payload: Partial<IUser>, validatedInviteDoc?: any) => {
   // 1. Resolve & Enforce Invitation Clearance

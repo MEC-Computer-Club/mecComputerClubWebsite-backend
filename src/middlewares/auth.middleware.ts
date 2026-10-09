@@ -19,10 +19,10 @@ export const authMiddleware = (roles?: string[]) => {
     try {
       const payload = jwt.verify(token, JWT_SECRET) as any;
       //crosscheck with database for role
-      const user = await UserModel.findById(payload.id).select("role fullName");
+      const user = await UserModel.findById(payload.id).select("role clubRole fullName");
       if (!user) return res.status(404).json({ message: "User does not exist" });
       if (user.role !== payload.role) {
-        (req as any).user = { id: payload.id, _id: payload.id, role: user.role, fullName: user.fullName };
+        (req as any).user = { id: payload.id, _id: payload.id, role: user.role, clubRole: user.clubRole, fullName: user.fullName };
         // ... refresh token
         res.clearCookie("auth_token");
         res.clearCookie("role");
@@ -43,9 +43,10 @@ export const authMiddleware = (roles?: string[]) => {
           sameSite: isProduction ? "none" : "lax",
         });
       } else {
-        (req as any).user = { id: payload.id, _id: payload.id, role: payload.role, fullName: user.fullName };
+        (req as any).user = { id: payload.id, _id: payload.id, role: payload.role, clubRole: user.clubRole, fullName: user.fullName };
       }
-      if (roles && roles.length && !roles.includes(user.role)) {
+      const activeRoles = [user.role, user.clubRole].filter(Boolean) as string[];
+      if (roles && roles.length && !roles.some((r) => activeRoles.includes(r))) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -79,9 +80,9 @@ export const optionalAuthMiddleware = async (req: Request, res: Response, next: 
   }
   try {
     const payload = jwt.verify(token, JWT_SECRET) as any;
-    const user = await UserModel.findById(payload.id).select("role fullName");
+    const user = await UserModel.findById(payload.id).select("role clubRole fullName");
     if (user) {
-      (req as any).user = { id: payload.id, _id: payload.id, role: user.role, fullName: user.fullName };
+      (req as any).user = { id: payload.id, _id: payload.id, role: user.role, clubRole: user.clubRole, fullName: user.fullName };
     }
   } catch {
     // Silently proceed for unauthenticated requests

@@ -6,6 +6,7 @@ import UserModel from "../models/User.model";
 import { generateEmail } from "../utils/generateEmailTemplate";
 import mongoose from "mongoose";
 import AuditLog from "../models/AuditLog.model";
+import { getEmailFrontendUrl } from "../utils/getFrontendUrl";
 
 /**
  * Create & Dispatch Invitation Code
@@ -218,7 +219,7 @@ export const createInvitationCode = async (req: Request, res: Response) => {
             const assignedRole = invite.role || "member";
             const template = generateEmail("invitation", {
               code: invite.code,
-              link: `${process.env.FRONTEND_URL}/register?role=${assignedRole}&code=` + invite.code,
+              link: `${getEmailFrontendUrl()}/register?role=${assignedRole}&code=` + invite.code,
             });
             await sendEmail(cleanEmail, "Your MEC Computer Club Invitation Code", template);
           } catch (mailErr) {
@@ -503,7 +504,7 @@ export const resendInvitationCode = async (req: Request, res: Response) => {
     const assignedRole = invite.role || "member";
     const template = generateEmail("invitation", {
       code: invite.code,
-      link: `${process.env.FRONTEND_URL}/register?role=${assignedRole}&code=` + invite.code,
+      link: `${getEmailFrontendUrl()}/register?role=${assignedRole}&code=` + invite.code,
     });
 
     await sendEmail(invite.email, "Your MEC Computer Club Invitation Code (Resent)", template);
